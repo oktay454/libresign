@@ -63,7 +63,7 @@
 			:name="t('libresign', 'Your profile documents')"
 			size="normal"
 			@closing="identificationDocumentStore.closeModal()">
-			<Documents />
+			<Documents :sign-request-uuid="signRequestUuid"/>
 		</NcDialog>
 		<NcDialog v-if="signMethodsStore.modal.clickToSign"
 			:can-close="!loading"
