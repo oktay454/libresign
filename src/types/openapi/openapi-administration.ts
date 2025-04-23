@@ -203,6 +203,26 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/tsa-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get TSA settings
+         * @description This endpoint requires admin access
+         */
+        get: operations["admin-gettsa-settings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/setting/has-root-cert": {
         parameters: {
             query?: never;
@@ -898,6 +918,42 @@ export interface operations {
                             meta: components["schemas"]["OCSMeta"];
                             data: {
                                 error: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-gettsa-settings": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                tsa_url: string | null;
+                                tsa_auth_method: string | null;
+                                tsa_username: string | null;
+                                tsa_policy_oid: string | null;
+                                tsa_hash_algorithm: string | null;
                             };
                         };
                     };

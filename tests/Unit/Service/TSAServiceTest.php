@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Tests\Unit\Service;
 
+use InvalidArgumentException;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Service\TSAService;
 use OCP\Files\IAppData;
@@ -237,14 +238,44 @@ class TSAServiceTest extends \OCA\Libresign\Tests\Unit\TestCase {
 
 	public function testDeleteClearsAllKeys(): void {
 		$tsa = $this->getClass();
-		$this->appConfig->setValueString('libresign', 'tsa_url', 'https://delete.test');
-		$this->appConfig->setValueString('libresign', 'tsa_username', 'user');
-		$this->appConfig->setValueString('libresign', 'tsa_password', 'secret', sensitive: true);
+		$data = [
+			'tsa_url' => 'https://example.coop',
+			'tsa_hash_algorithm' => 'sha256',
+			'tsa_auth_method' => 'basic',
+			'tsa_username' => 'user',
+			'tsa_password' => 'pass',
+		];
+		$tsa->save($data);
 
 		$tsa->delete();
 
-		$this->assertEmpty($this->appConfig->getValueString('libresign', 'tsa_url'));
-		$this->assertEmpty($this->appConfig->getValueString('libresign', 'tsa_username'));
-		$this->assertEmpty($this->appConfig->getValueString('libresign', 'tsa_password'));
+		$this->assertEmpty($tsa->getValue('tsa_url'));
+		$this->assertEmpty($tsa->getValue('tsa_hash_algorithm'));
+		$this->assertEmpty($tsa->getValue('tsa_auth_method'));
+		$this->assertEmpty($tsa->getValue('tsa_username'));
+		$this->assertEmpty($tsa->getValue('tsa_password'));
+	}
+
+	public function testGetValueReturnsConfiguredValue(): void {
+		$tsa = $this->getClass();
+		$data = [
+			'tsa_url' => 'https://example.coop',
+			'tsa_hash_algorithm' => 'sha256',
+			'tsa_auth_method' => 'basic',
+			'tsa_username' => 'user',
+			'tsa_password' => 'pass',
+		];
+		$tsa->save($data);
+		foreach ($data as $key => $expected) {
+			$actual = $tsa->getValue($key);
+			$this->assertSame($expected, $actual);
+		}
+	}
+
+	public function testGetValueThrowsExceptionForInvalidKey(): void {
+		$this->expectException(InvalidArgumentException::class);
+		$this->expectExceptionMessage('Invalid TSA setting key: invalid_key');
+		$tsa = $this->getClass();
+		$tsa->getValue('invalid_key');
 	}
 }

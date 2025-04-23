@@ -9,6 +9,8 @@ declare(strict_types=1);
 namespace OCA\Libresign\Service;
 
 use GuzzleHttp\Exception\GuzzleException;
+use InvalidArgumentException;
+use OCA\Libresign\AppInfo\Application;
 use OCP\Files\IAppData;
 use OCP\Files\NotFoundException;
 use OCP\Files\NotPermittedException;
@@ -157,26 +159,34 @@ class TSAService {
 	}
 
 	private function handleNoneAuth(): void {
-		$this->appConfig->deleteKey('libresign', 'tsa_username');
-		$this->appConfig->deleteKey('libresign', 'tsa_password');
+		$this->appConfig->deleteKey(Application::APP_ID, 'tsa_username');
+		$this->appConfig->deleteKey(Application::APP_ID, 'tsa_password');
 	}
 
 	private function handlePkcs12Auth(): void {
-		$this->appConfig->deleteKey('libresign', 'tsa_username');
+		$this->appConfig->deleteKey(Application::APP_ID, 'tsa_username');
 	}
 
 	private function storeSettings(array $data): void {
 		foreach (self::CONFIG_KEYS as $key) {
 			if (isset($data[$key])) {
 				$sensitive = in_array($key, ['tsa_password', 'tsa_p12_password'], true);
-				$this->appConfig->setValueString('libresign', $key, (string)$data[$key], sensitive: $sensitive);
+				$this->appConfig->setValueString(Application::APP_ID, $key, (string)$data[$key], sensitive: $sensitive);
 			}
 		}
 	}
 
+	public function getValue(string $key): ?string {
+		if (!in_array($key, self::CONFIG_KEYS, true)) {
+			throw new InvalidArgumentException("Invalid TSA setting key: $key");
+		}
+
+		return $this->appConfig->getValueString(Application::APP_ID, $key);
+	}
+
 	public function delete(): void {
 		foreach (self::CONFIG_KEYS as $key) {
-			$this->appConfig->deleteKey('libresign', $key);
+			$this->appConfig->deleteKey(Application::APP_ID, $key);
 		}
 
 		try {

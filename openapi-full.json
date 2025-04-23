@@ -9473,6 +9473,109 @@
                 }
             }
         },
+        "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/tsa-settings": {
+            "get": {
+                "operationId": "admin-gettsa-settings",
+                "summary": "Get TSA settings",
+                "description": "This endpoint requires admin access",
+                "tags": [
+                    "admin"
+                ],
+                "security": [
+                    {
+                        "bearer_auth": []
+                    },
+                    {
+                        "basic_auth": []
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "apiVersion",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "v1"
+                            ],
+                            "default": "v1"
+                        }
+                    },
+                    {
+                        "name": "OCS-APIRequest",
+                        "in": "header",
+                        "description": "Required to be true for the API request to pass",
+                        "required": true,
+                        "schema": {
+                            "type": "boolean",
+                            "default": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": [
+                                        "ocs"
+                                    ],
+                                    "properties": {
+                                        "ocs": {
+                                            "type": "object",
+                                            "required": [
+                                                "meta",
+                                                "data"
+                                            ],
+                                            "properties": {
+                                                "meta": {
+                                                    "$ref": "#/components/schemas/OCSMeta"
+                                                },
+                                                "data": {
+                                                    "type": "object",
+                                                    "required": [
+                                                        "tsa_url",
+                                                        "tsa_auth_method",
+                                                        "tsa_username",
+                                                        "tsa_policy_oid",
+                                                        "tsa_hash_algorithm"
+                                                    ],
+                                                    "properties": {
+                                                        "tsa_url": {
+                                                            "type": "string",
+                                                            "nullable": true
+                                                        },
+                                                        "tsa_auth_method": {
+                                                            "type": "string",
+                                                            "nullable": true
+                                                        },
+                                                        "tsa_username": {
+                                                            "type": "string",
+                                                            "nullable": true
+                                                        },
+                                                        "tsa_policy_oid": {
+                                                            "type": "string",
+                                                            "nullable": true
+                                                        },
+                                                        "tsa_hash_algorithm": {
+                                                            "type": "string",
+                                                            "nullable": true
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/ocs/v2.php/apps/libresign/api/{apiVersion}/setting/has-root-cert": {
             "get": {
                 "operationId": "setting-has-root-cert",

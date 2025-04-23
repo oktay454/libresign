@@ -18,6 +18,7 @@ use OCA\Libresign\Service\Install\ConfigureCheckService;
 use OCA\Libresign\Service\Install\InstallService;
 use OCA\Libresign\Service\SignatureBackgroundService;
 use OCA\Libresign\Service\SignatureTextService;
+use OCA\Libresign\Service\TSAService;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
@@ -51,6 +52,7 @@ class AdminController extends AEnvironmentAwareController {
 		private IL10N $l10n,
 		protected ISession $session,
 		private SignatureBackgroundService $signatureBackgroundService,
+		private TSAService $tsaService,
 	) {
 		parent::__construct(Application::APP_ID, $request);
 		$this->eventSource = $this->eventSourceFactory->create();
@@ -524,5 +526,126 @@ class AdminController extends AEnvironmentAwareController {
 				Http::STATUS_BAD_REQUEST
 			);
 		}
+	}
+
+
+	/**
+	 * Get TSA settings
+	 *
+	 * @return DataResponse<Http::STATUS_OK, array{
+	 *     tsa_url: string|null,
+	 *     tsa_auth_method: string|null,
+	 *     tsa_username: string|null,
+	 *     tsa_policy_oid: string|null,
+	 *     tsa_hash_algorithm: string|null
+	 * }, array{}>
+	 *
+	 * 200: OK
+	 */
+	#[ApiRoute(verb: 'GET', url: '/api/{apiVersion}/admin/tsa-settings', requirements: ['apiVersion' => '(v1)'])]
+	public function getTSASettings(): DataResponse {
+		$data = [
+			'tsa_url' => $this->tsaService->getValue('tsa_url'),
+			'tsa_auth_method' => $this->tsaService->getValue('tsa_auth_method'),
+			'tsa_username' => $this->tsaService->getValue('tsa_username'),
+			'tsa_policy_oid' => $this->tsaService->getValue('tsa_policy_oid'),
+			'tsa_hash_algorithm' => $this->tsaService->getValue('tsa_hash_algorithm'),
+		];
+		return new DataResponse($data);
+	}
+
+	/**
+	 * Save or update TSA settings
+	 *
+	 * @param array{
+	 *     tsa_url: string,
+	 *     tsa_auth_method: string,
+	 *     tsa_username?: string,
+	 *     tsa_password?: string,
+	 *     tsa_p12_password?: string,
+	 *     tsa_policy_oid?: string,
+	 *     tsa_hash_algorithm: string
+	 * } $data
+	 *
+	 * @return DataResponse<Http::STATUS_NO_CONTENT, null, array{}>
+	 *
+	 * 204: No Content
+	 */
+	#[ApiRoute(verb: 'PUT', url: '/api/{apiVersion}/admin/tsa-settings', requirements: ['apiVersion' => '(v1)'])]
+	public function updateTSASettings(array $data): DataResponse {
+		$errors = $this->tsaService->validate($data);
+		if (!empty($errors)) {
+			return new DataResponse(['errors' => $errors], Http::STATUS_UNPROCESSABLE_ENTITY);
+		}
+
+		$this->tsaService->save($data);
+		return new DataResponse([], Http::STATUS_NO_CONTENT);
+	}
+
+	/**
+	 * Delete TSA settings
+	 *
+	 * @return DataResponse<Http::STATUS_NO_CONTENT, null, array{}>
+	 *
+	 * 204: No Content
+	 */
+	#[ApiRoute(verb: 'DELETE', url: '/api/{apiVersion}/admin/tsa-settings', requirements: ['apiVersion' => '(v1)'])]
+	public function deleteTSASettings(): DataResponse {
+		$this->tsaService->delete();
+		return new DataResponse([], Http::STATUS_NO_CONTENT);
+	}
+
+	/**
+	 * Upload TSA P12 certificate file
+	 *
+	 * @param UploadedFile $file
+	 * @return DataResponse<Http::STATUS_CREATED, array{message: string}, array{}>
+	 *
+	 * 201: Created
+	 */
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/tsa-settings/upload-p12', requirements: ['apiVersion' => '(v1)'])]
+	public function uploadTSAP12File(): DataResponse {
+		$image = $this->request->getUploadedFile('image');
+		$phpFileUploadErrors = [
+			UPLOAD_ERR_OK => $this->l10n->t('The file was uploaded'),
+			UPLOAD_ERR_INI_SIZE => $this->l10n->t('The uploaded file exceeds the upload_max_filesize directive in php.ini'),
+			UPLOAD_ERR_FORM_SIZE => $this->l10n->t('The uploaded file exceeds the MAX_FILE_SIZE directive that was specified in the HTML form'),
+			UPLOAD_ERR_PARTIAL => $this->l10n->t('The file was only partially uploaded'),
+			UPLOAD_ERR_NO_FILE => $this->l10n->t('No file was uploaded'),
+			UPLOAD_ERR_NO_TMP_DIR => $this->l10n->t('Missing a temporary folder'),
+			UPLOAD_ERR_CANT_WRITE => $this->l10n->t('Could not write file to disk'),
+			UPLOAD_ERR_EXTENSION => $this->l10n->t('A PHP extension stopped the file upload'),
+		];
+		if (empty($image)) {
+			$error = $this->l10n->t('No file uploaded');
+		} elseif (!empty($image) && array_key_exists('error', $image) && $image['error'] !== UPLOAD_ERR_OK) {
+			$error = $phpFileUploadErrors[$image['error']];
+		}
+		if ($error !== null) {
+			return new DataResponse(
+				[
+					'message' => $error,
+					'status' => 'failure',
+				],
+				Http::STATUS_UNPROCESSABLE_ENTITY
+			);
+		}
+		try {
+			$this->tsaService->uploadTSAP12File($image['tmp_name']);
+		} catch (\Exception $e) {
+			return new DataResponse(
+				[
+					'message' => $e->getMessage(),
+					'status' => 'failure',
+				],
+				Http::STATUS_UNPROCESSABLE_ENTITY
+			);
+		}
+
+		return new DataResponse(
+			[
+				'status' => 'success',
+			]
+		);
 	}
 }
