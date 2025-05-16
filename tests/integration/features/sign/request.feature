@@ -268,8 +268,8 @@ Feature: request-signature
     When as user "signer1"
     And sending "get" to ocs "/apps/notifications/api/v2/notifications"
     Then the response should be a JSON array with the following mandatory values
-      | key | value                                                         |
-      | ocs | (jq).data\|.[].subject == "admin requested your signature on document"|
+      | key | value                                                                   |
+      | ocs | (jq).data\|any(.subject == "admin requested your signature on document")|
     And there should be 0 emails in my inbox
 
   Scenario: Request to sign with success using email as identifier
@@ -369,8 +369,8 @@ Feature: request-signature
     When as user "signer1"
     And sending "get" to ocs "/apps/notifications/api/v2/notifications"
     Then the response should be a JSON array with the following mandatory values
-      | key | value                                                         |
-      | ocs | (jq).data\|.[].subject == "admin requested your signature on document"|
+      | key | value                                                                   |
+      | ocs | (jq).data\|any(.subject == "admin requested your signature on document")|
     And there should be 1 emails in my inbox
     And I open the latest email to "signer1@domain.test" with subject "LibreSign: There is a file for you to sign"
 

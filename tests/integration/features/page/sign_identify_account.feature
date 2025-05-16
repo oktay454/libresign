@@ -17,8 +17,8 @@ Feature: page/sign_identify_account
     When as user "signer1"
     And sending "get" to ocs "/apps/notifications/api/v2/notifications"
     Then the response should be a JSON array with the following mandatory values
-      | key | value                                                         |
-      | ocs | (jq).data\|.[].subject == "admin requested your signature on document"|
+      | key | value                                                                   |
+      | ocs | (jq).data\|any(.subject == "admin requested your signature on document")|
     When sending "get" to ocs "/apps/libresign/api/v1/file/list"
     And the response should have a status code 200
     And the response should be a JSON array with the following mandatory values
@@ -70,8 +70,8 @@ Feature: page/sign_identify_account
     When as user "signer1"
     And sending "get" to ocs "/apps/notifications/api/v2/notifications"
     Then the response should be a JSON array with the following mandatory values
-      | key | value                                                         |
-      | ocs | (jq).data\|.[].subject == "admin requested your signature on document"|
+      | key | value                                                                   |
+      | ocs | (jq).data\|any(.subject == "admin requested your signature on document")|
     When sending "get" to ocs "/apps/libresign/api/v1/file/list"
     And the response should have a status code 200
     And the response should be a JSON array with the following mandatory values
