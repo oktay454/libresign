@@ -40,9 +40,15 @@ OC.L10N.register(
     "New password" : "Cyfrinair newydd",
     "Resource" : "Adnodd",
     "Dependencies" : "Dibyniaethau",
+    "Reminders" : "Nodau atgoffa",
+    "on" : "ar",
     "Yes" : "Iawn",
     "No" : "No",
+    "Username" : "Enw defnyddiwr",
+    "Optional" : "Dewisol",
     "Forgot password?" : "Anghofio cyfrinair?",
-    "No date" : "No date"
+    "No date" : "No date",
+    "Time:" : "Dewis amser",
+    "Unknown" : "Anhysbys"
 },
 "nplurals=4; plural=(n==1) ? 0 : (n==2) ? 1 : (n != 8 && n != 11) ? 2 : 3;");

@@ -495,6 +495,23 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/account/config/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set user config value */
+        put: operations["account-set-config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/file/validate/uuid/{uuid}": {
         parameters: {
             query?: never;
@@ -600,7 +617,7 @@ export type paths = {
         put?: never;
         /**
          * Send a file
-         * @description Send a new file to Nextcloud and return the fileId to request to sign usign fileId
+         * @description Send a new file to Nextcloud and return the fileId to request signature
          */
         post: operations["file-save"];
         delete?: never;
@@ -2310,6 +2327,57 @@ export interface operations {
             };
         };
     };
+    "account-set-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+                /** @description Config key */
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Config updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                key: string;
+                                value: Record<string, never>;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Error updating config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
     "file-validate-uuid": {
         parameters: {
             query?: never;
@@ -3005,6 +3073,8 @@ export interface operations {
             query?: {
                 /** @description search params */
                 search?: string;
+                /** @description filter by method (email, account, sms, signal, telegram, whatsapp, xmpp) */
+                method?: string;
                 /** @description the number of page to return. Default: 1 */
                 page?: number;
                 /** @description Total of elements to return. Default: 25 */
@@ -3733,7 +3803,7 @@ export interface operations {
                      * @enum {string|null}
                      */
                     identifyMethod?: "account" | "email" | null;
-                    /** @description Method used to sign the document, i.e. emailToken, account, clickToSign */
+                    /** @description Method used to sign the document, i.e. emailToken, account, clickToSign, sms, signal, telegram, whatsapp, xmpp */
                     signMethod?: string | null;
                     /** @description Identify value, i.e. the signer email, account or phone number */
                     identify?: string | null;
@@ -3797,7 +3867,7 @@ export interface operations {
                      * @enum {string|null}
                      */
                     identifyMethod?: "account" | "email" | null;
-                    /** @description Method used to sign the document, i.e. emailToken, account, clickToSign */
+                    /** @description Method used to sign the document, i.e. emailToken, account, clickToSign, sms, signal, telegram, whatsapp, xmpp */
                     signMethod?: string | null;
                     /** @description Identify value, i.e. the signer email, account or phone number */
                     identify?: string | null;

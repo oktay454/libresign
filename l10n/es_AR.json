@@ -30,13 +30,13 @@
     "Settings" : "Ajustes",
     "Loading …" : "Cargando …",
     "Name" : "Nombre",
-    "Searching …" : "Buscando ...",
-    "No recommendations. Start typing." : "No hay sugerencias. Comenzar a escribir",
     "Update" : "Actualizar",
     "Choose" : "Elige",
     "Send" : "Enviar",
     "Previous" : "Anterior",
     "Next" : "Siguiente",
+    "Searching …" : "Buscando ...",
+    "No recommendations. Start typing." : "No hay sugerencias. Comenzar a escribir",
     "Confirm" : "Confirmar",
     "Open file" : "Abrir archivo",
     "Administration" : "Administración",
@@ -65,10 +65,16 @@
     "Message" : "Mensaje",
     "Resource" : "Recurso",
     "Dependencies" : "Dependencias",
+    "Reminders" : "Recordatorios",
+    "Not scheduled" : "No programado",
     "Yes" : "Si",
     "No" : "No",
     "Reset to default" : "Restablecer al predeterminado",
+    "Invalid URL" : "URL invalida",
+    "Username" : "Nombre de usuario",
+    "Optional" : "Opcional",
     "Forgot password?" : "¿Contraseña olvidada?",
-    "No date" : "Sin fecha"
+    "No date" : "Sin fecha",
+    "Unknown" : "Desconocido"
 },"pluralForm" :"nplurals=3; plural=n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2;"
 }

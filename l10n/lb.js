@@ -32,8 +32,12 @@ OC.L10N.register(
     "Current password" : "Momentan 't Passwuert",
     "New password" : "Neit Passwuert",
     "Resource" : "Ressource",
+    "Reminders" : "Erennërungen",
     "Yes" : "Yes",
     "No" : "No",
-    "No date" : "No date"
+    "Username" : "Benotzernumm",
+    "Optional" : "Fräiwëlleg",
+    "No date" : "No date",
+    "Unknown" : "Onbekannt"
 },
 "nplurals=2; plural=(n != 1);");

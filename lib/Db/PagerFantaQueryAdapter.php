@@ -9,9 +9,9 @@ declare(strict_types=1);
 namespace OCA\Libresign\Db;
 
 use Doctrine\DBAL\Query\QueryBuilder;
+use OCA\Libresign\Vendor\Pagerfanta\Adapter\AdapterInterface;
+use OCA\Libresign\Vendor\Pagerfanta\Exception\InvalidArgumentException;
 use OCP\DB\QueryBuilder\IQueryBuilder;
-use Pagerfanta\Adapter\AdapterInterface;
-use Pagerfanta\Exception\InvalidArgumentException;
 
 /**
  * Adapter which calculates pagination from a Doctrine DBAL QueryBuilder.
@@ -31,6 +31,7 @@ class PagerFantaQueryAdapter implements AdapterInterface {
 		}
 	}
 
+	#[\Override]
 	public function getNbResults(): int {
 		$total = $this->countQueryBuilder->executeQuery()->fetchOne();
 
@@ -42,6 +43,7 @@ class PagerFantaQueryAdapter implements AdapterInterface {
 	 *
 	 * @return array
 	 */
+	#[\Override]
 	public function getSlice(int $offset, int $length): iterable {
 		$qb = clone $this->queryBuilder;
 

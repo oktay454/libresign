@@ -247,6 +247,56 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/reminder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get reminder settings
+         * @description This endpoint requires admin access
+         */
+        get: operations["admin-reminder-fetch"];
+        put?: never;
+        /**
+         * Save reminder
+         * @description This endpoint requires admin access
+         */
+        post: operations["admin-reminder-save"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/tsa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set TSA configuration values with proper sensitive data handling
+         * @description Only saves configuration if tsa_url is provided. Automatically manages username/password fields based on authentication type.
+         *     This endpoint requires admin access
+         */
+        post: operations["admin-set-tsa-config"];
+        /**
+         * Delete TSA configuration
+         * @description Delete all TSA configuration fields from the application settings.
+         *     This endpoint requires admin access
+         */
+        delete: operations["admin-delete-tsa-config"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/setting/has-root-cert": {
         parameters: {
             query?: never;
@@ -318,6 +368,16 @@ export type components = {
         };
         PublicCapabilities: {
             libresign?: components["schemas"]["Capabilities"];
+        };
+        ReminderSettings: {
+            /** Format: int64 */
+            days_before: number;
+            /** Format: int64 */
+            days_between: number;
+            /** Format: int64 */
+            max: number;
+            send_timer: string;
+            next_run?: string;
         };
         RootCertificate: {
             commonName: string;
@@ -1087,6 +1147,187 @@ export interface operations {
                                 /** @enum {string} */
                                 status: "failure";
                                 message: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-reminder-fetch": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ReminderSettings"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-reminder-save": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int64
+                     * @description First reminder after (days)
+                     */
+                    daysBefore: number;
+                    /**
+                     * Format: int64
+                     * @description Days between reminders
+                     */
+                    daysBetween: number;
+                    /**
+                     * Format: int64
+                     * @description Max reminders per signer
+                     */
+                    max: number;
+                    /** @description Send time (HH:mm) */
+                    sendTimer: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: components["schemas"]["ReminderSettings"];
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-set-tsa-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description TSA server URL (required for saving) */
+                    tsa_url?: string | null;
+                    /** @description TSA policy OID */
+                    tsa_policy_oid?: string | null;
+                    /** @description Authentication type (none|basic), defaults to 'none' */
+                    tsa_auth_type?: string | null;
+                    /** @description Username for basic authentication */
+                    tsa_username?: string | null;
+                    /** @description Password for basic authentication (stored as sensitive data) */
+                    tsa_password?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                /** @enum {string} */
+                                status: "success";
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Validation error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                /** @enum {string} */
+                                status: "error";
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-delete-tsa-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                /** @enum {string} */
+                                status: "success";
                             };
                         };
                     };

@@ -39,11 +39,12 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+          submodules: true
           path: ${{ env.APP_NAME }}
 
       - name: Get app version number
         id: app-version
-        uses: skjnldsv/xpath-action@f5b036e9d973f42c86324833fd00be90665fbf77 # master
+        uses: skjnldsv/xpath-action@f5b036e9d973f42c86324833fd00be90665fbf77 # v1.0.0
         with:
           filename: ${{ env.APP_NAME }}/appinfo/info.xml
           expression: "//info//version/text()"
@@ -54,7 +55,7 @@ jobs:
 
       - name: Get appinfo data
         id: appinfo
-        uses: skjnldsv/xpath-action@f5b036e9d973f42c86324833fd00be90665fbf77 # master
+        uses: skjnldsv/xpath-action@f5b036e9d973f42c86324833fd00be90665fbf77 # v1.0.0
         with:
           filename: ${{ env.APP_NAME }}/appinfo/info.xml
           expression: "//info//dependencies//nextcloud/@min-version"
@@ -72,7 +73,7 @@ jobs:
       - name: Set up node ${{ steps.versions.outputs.nodeVersion }}
         # Skip if no package.json
         if: ${{ steps.versions.outputs.nodeVersion }}
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ steps.versions.outputs.nodeVersion }}
 
@@ -88,7 +89,7 @@ jobs:
           filename: ${{ env.APP_NAME }}/appinfo/info.xml
 
       - name: Set up php ${{ steps.php-versions.outputs.php-min }}
-        uses: shivammathur/setup-php@ec406be512d7077f68eed36e63f4d91bc006edc4 # v2.35.4
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # v2.35.5
         with:
           php-version: ${{ steps.php-versions.outputs.php-min }}
           coverage: none
@@ -178,7 +179,7 @@ jobs:
           tar -zcvf ${{ env.APP_NAME }}.tar.gz ${{ env.APP_NAME }}
 
       - name: Attach tarball to github release
-        uses: svenstaro/upload-release-action@81c65b7cd4de9b2570615ce3aad67a41de5b1a13 # v2
+        uses: svenstaro/upload-release-action@81c65b7cd4de9b2570615ce3aad67a41de5b1a13 # v2.11.2
         id: attach_to_release
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -188,7 +189,7 @@ jobs:
           overwrite: true
 
       - name: Upload app to Nextcloud appstore
-        uses: nextcloud-releases/nextcloud-appstore-push-action@a011fe619bcf6e77ddebc96f9908e1af4071b9c1 # v1
+        uses: nextcloud-releases/nextcloud-appstore-push-action@a011fe619bcf6e77ddebc96f9908e1af4071b9c1 # v1.0.3
         with:
           app_name: ${{ env.APP_NAME }}
           appstore_token: ${{ secrets.APPSTORE_TOKEN }}

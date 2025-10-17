@@ -36,6 +36,7 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		parent::__construct($config, $appConfig, $appDataFactory, $dateTimeFormatter, $tempManager, $certificatePolicyService);
 	}
 
+	#[\Override]
 	public function generateRootCert(
 		string $commonName,
 		array $names = [],
@@ -73,6 +74,7 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		return $options;
 	}
 
+	#[\Override]
 	public function generateCertificate(): string {
 		$configPath = $this->getConfigPath();
 		$rootCertificate = file_get_contents($configPath . DIRECTORY_SEPARATOR . 'ca.pem');
@@ -86,7 +88,11 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 			'private_key_type' => OPENSSL_KEYTYPE_RSA,
 		]);
 
-		$csr = openssl_csr_new($this->getCsrNames(), $privateKey);
+		$csr = @openssl_csr_new($this->getCsrNames(), $privateKey);
+		if ($csr === false) {
+			$message = openssl_error_string();
+			throw new LibresignException('OpenSSL error: ' . $message);
+		}
 
 		$x509 = openssl_csr_sign($csr, $rootCertificate, $rootPrivateKey, $this->expirity(), [
 			'config' => $this->getFilenameToLeafCert(),
@@ -207,6 +213,7 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		return $distinguishedNames;
 	}
 
+	#[\Override]
 	public function isSetupOk(): bool {
 		$ok = parent::isSetupOk();
 		if (!$ok) {
@@ -218,6 +225,7 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		return $certificate && $privateKey;
 	}
 
+	#[\Override]
 	public function configureCheck(): array {
 		if ($this->isSetupOk()) {
 			return [(new ConfigureCheckHelper())

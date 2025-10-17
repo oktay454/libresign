@@ -14,6 +14,9 @@ use ImagickDraw;
 use ImagickPixel;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\LibresignException;
+use OCA\Libresign\Vendor\Twig\Environment;
+use OCA\Libresign\Vendor\Twig\Error\SyntaxError;
+use OCA\Libresign\Vendor\Twig\Loader\FilesystemLoader;
 use OCP\IAppConfig;
 use OCP\IDateTimeZone;
 use OCP\IL10N;
@@ -21,9 +24,6 @@ use OCP\IRequest;
 use OCP\IUserSession;
 use Psr\Log\LoggerInterface;
 use Sabre\DAV\UUIDUtil;
-use Twig\Environment;
-use Twig\Error\SyntaxError;
-use Twig\Loader\FilesystemLoader;
 
 class SignatureTextService {
 	public const TEMPLATE_DEFAULT_FONT_SIZE = 10;
@@ -205,12 +205,12 @@ class SignatureTextService {
 		if ($fonts) {
 			$draw->setFont($fonts[0]);
 		} else {
-			$fallbackFond = __DIR__ . '/../../vendor/mpdf/mpdf/ttfonts/DejaVuSerifCondensed.ttf';
+			$fallbackFond = __DIR__ . '/../../3rdparty/composer/mpdf/mpdf/ttfonts/DejaVuSerifCondensed.ttf';
 			if (!file_exists($fallbackFond)) {
 				$this->logger->error('No fonts available at system, and fallback font not found: ' . $fallbackFond);
 				throw new LibresignException('No fonts available at system, and fallback font not found: ' . $fallbackFond);
 			}
-			$draw->setFont(__DIR__ . '/../../vendor/mpdf/mpdf/ttfonts/DejaVuSerifCondensed.ttf');
+			$draw->setFont(__DIR__ . '/../../3rdparty/composer/mpdf/mpdf/ttfonts/DejaVuSerifCondensed.ttf');
 		}
 		if (!$fontSize) {
 			$fontSize = $this->getSignatureFontSize();

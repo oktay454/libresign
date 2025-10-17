@@ -20,6 +20,8 @@
 		<SignatureStamp />
 		<SignatureHashAlgorithm />
 		<DefaultUserFolder />
+		<Reminders />
+		<TSA />
 	</NcSettingsSection>
 </template>
 
@@ -36,10 +38,12 @@ import ExpirationRules from './ExpirationRules.vue'
 import IdentificationDocuments from './IdentificationDocuments.vue'
 import IdentificationFactors from './IdentificationFactors.vue'
 import LegalInformation from './LegalInformation.vue'
+import Reminders from './Reminders.vue'
 import RootCertificateCfssl from './RootCertificateCfssl.vue'
 import RootCertificateOpenSsl from './RootCertificateOpenSsl.vue'
 import SignatureHashAlgorithm from './SignatureHashAlgorithm.vue'
 import SignatureStamp from './SignatureStamp.vue'
+import TSA from './TSA.vue'
 import Validation from './Validation.vue'
 
 export default {
@@ -60,7 +64,9 @@ export default {
 		RootCertificateOpenSsl,
 		SignatureHashAlgorithm,
 		SignatureStamp,
+		TSA,
 		Validation,
+		Reminders,
 	},
 	data() {
 		return {

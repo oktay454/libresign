@@ -47,19 +47,39 @@ class Account extends AbstractIdentifyMethod {
 		private MailService $mail,
 	) {
 		// TRANSLATORS Name of possible authenticator method. This signalize that the signer could be identified by Nextcloud acccount
-		$this->friendlyName = $this->identifyService->getL10n()->t('Account');
+		$this->setFriendlyName($this->identifyService->getL10n()->t('Account'));
 		parent::__construct(
 			$identifyService,
 		);
 	}
 
+	#[\Override]
 	public function validateToRequest(): void {
-		$signer = $this->userManager->get($this->entity->getIdentifierValue());
-		if (!$signer) {
-			throw new LibresignException($this->identifyService->getL10n()->t('User not found.'));
+		$signer = $this->getSigner();
+		$this->validateSignatureMethodsForRequest($signer);
+	}
+
+	private function validateSignatureMethodsForRequest(IUser $signer): void {
+		foreach ($this->getSignatureMethods() as $signatureMethod) {
+			if (!$signatureMethod->isEnabled()) {
+				continue;
+			}
+			if ($signatureMethod->getName() === ISignatureMethod::SIGNATURE_METHOD_EMAIL_TOKEN) {
+				$this->validateEmailForEmailToken($signer);
+			}
 		}
 	}
 
+	private function validateEmailForEmailToken(IUser $signer): void {
+		$email = $signer->getEMailAddress();
+		if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+			throw new LibresignException(
+				$this->identifyService->getL10n()->t('Signer without valid email address')
+			);
+		}
+	}
+
+	#[\Override]
 	public function validateToIdentify(): void {
 		$signer = $this->getSigner();
 		$this->throwIfNotAuthenticated();
@@ -72,6 +92,7 @@ class Account extends AbstractIdentifyMethod {
 		$this->updateIdentifiedAt();
 	}
 
+	#[\Override]
 	public function validateToSign(): void {
 		$signer = $this->getSigner();
 		$this->throwIfNotAuthenticated();
@@ -126,6 +147,7 @@ class Account extends AbstractIdentifyMethod {
 		}
 	}
 
+	#[\Override]
 	public function getSettings(): array {
 		if (!empty($this->settings)) {
 			return $this->settings;

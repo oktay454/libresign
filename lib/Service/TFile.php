@@ -8,9 +8,9 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Service;
 
+use OCA\Libresign\Vendor\setasign\Fpdi\PdfParserService\Type\PdfTypeException;
 use OCP\Files\Node;
 use OCP\Http\Client\IClientService;
-use setasign\Fpdi\PdfParserService\Type\PdfTypeException;
 
 trait TFile {
 	/** @var ?string */
@@ -134,7 +134,7 @@ trait TFile {
 	 */
 	private function validatePdfStringWithFpdi($string): void {
 		try {
-			$parser = new \Smalot\PdfParser\Parser();
+			$parser = new \OCA\Libresign\Vendor\Smalot\PdfParser\Parser();
 			$parser->parseContent($string);
 		} catch (\Throwable $th) {
 			$this->logger->error($th->getMessage());

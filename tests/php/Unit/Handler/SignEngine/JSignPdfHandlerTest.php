@@ -8,8 +8,6 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Tests\Unit\Service;
 
-use Jeidison\JSignPDF\JSignPDF;
-use Jeidison\JSignPDF\Sign\JSignParam;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\DataObjects\VisibleElementAssoc;
 use OCA\Libresign\Db\FileElement;
@@ -19,6 +17,8 @@ use OCA\Libresign\Helper\JavaHelper;
 use OCA\Libresign\Service\SignatureBackgroundService;
 use OCA\Libresign\Service\SignatureTextService;
 use OCA\Libresign\Service\SignerElementsService;
+use OCA\Libresign\Vendor\Jeidison\JSignPDF\JSignPDF;
+use OCA\Libresign\Vendor\Jeidison\JSignPDF\Sign\JSignParam;
 use OCP\IAppConfig;
 use OCP\IDateTimeZone;
 use OCP\IRequest;
@@ -384,7 +384,7 @@ final class JSignPdfHandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private static function getElement(array $attributes = [], string $imagePath = ''): VisibleElementAssoc {
 		$element = new FileElement();
 		foreach ($attributes as $attribute => $value) {
-			$method = 'set' . ucfirst($attribute);
+			$method = 'set' . ucfirst((string)$attribute);
 			$element->$method($value);
 		}
 		return new VisibleElementAssoc(

@@ -19,6 +19,8 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Db\UserElementMapper;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Helper\ValidateHelper;
+use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
+use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\ISignatureMethod;
 use OCA\Libresign\Service\IdentifyMethodService;
 use OCA\Libresign\Service\SignerElementsService;
 use OCP\Files\IMimeTypeDetector;
@@ -30,6 +32,7 @@ use OCP\IL10N;
 use OCP\IUser;
 use OCP\IUserManager;
 use OCP\Security\IHasher;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 
 final class ValidateHelperTest extends \OCA\Libresign\Tests\Unit\TestCase {
@@ -619,6 +622,289 @@ final class ValidateHelperTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			['sms', false],
 			['signal', false],
 			['telegram', false],
+		];
+	}
+
+	public function testValidateIdentifyMethodForRequestWithNoSignatureMethods(): void {
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getSignatureMethods')->willReturn([]);
+		$identifyMethod->method('validateToRequest');
+
+		$this->identifyMethodService
+			->method('getInstanceOfIdentifyMethod')
+			->willReturn($identifyMethod);
+
+		$validateHelper = $this->getValidateHelper();
+
+		$this->expectException(LibresignException::class);
+		$this->expectExceptionMessage('No signature methods for identify method account');
+
+		$method = new \ReflectionMethod($validateHelper, 'validateIdentifyMethodForRequest');
+		$method->invoke($validateHelper, 'account', 'user@example.com');
+	}
+
+	public function testValidateIdentifyMethodForRequestWithValidSignatureMethods(): void {
+		$signatureMethod = $this->createMock(ISignatureMethod::class);
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getSignatureMethods')->willReturn([$signatureMethod]);
+		$identifyMethod->method('validateToRequest');
+
+		$this->identifyMethodService
+			->method('getInstanceOfIdentifyMethod')
+			->willReturn($identifyMethod);
+
+		$validateHelper = $this->getValidateHelper();
+
+		$method = new \ReflectionMethod($validateHelper, 'validateIdentifyMethodForRequest');
+		$result = $method->invoke($validateHelper, 'account', 'user@example.com');
+
+		$this->assertNull($result);
+	}
+
+	public function testValidateIdentifySignersIntegration(): void {
+		$signatureMethod = $this->createMock(ISignatureMethod::class);
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getSignatureMethods')->willReturn([$signatureMethod]);
+		$identifyMethod->method('validateToRequest');
+
+		$this->identifyMethodService
+			->method('getInstanceOfIdentifyMethod')
+			->willReturn($identifyMethod);
+
+		$data = [
+			'users' => [
+				['identify' => ['account' => 'user@example.com']]
+			]
+		];
+
+		$validateHelper = $this->getValidateHelper();
+		$result = $validateHelper->validateIdentifySigners($data);
+
+		$this->assertNull($result);
+	}
+
+	#[DataProvider('providerValidateIdentifySigners')]
+	public function testValidateIdentifySigners(array $data, bool $shouldThrow = false, string $expectedMessage = ''): void {
+		// Mock signature method for valid cases
+		$signatureMethod = $this->createMock(ISignatureMethod::class);
+		$identifyMethod = $this->createMock(IIdentifyMethod::class);
+		$identifyMethod->method('getSignatureMethods')->willReturn([$signatureMethod]);
+		$identifyMethod->method('validateToRequest');
+
+		$this->identifyMethodService
+			->method('getInstanceOfIdentifyMethod')
+			->willReturn($identifyMethod);
+
+		$validateHelper = $this->getValidateHelper();
+
+		if ($shouldThrow) {
+			$this->expectException(LibresignException::class);
+			if ($expectedMessage) {
+				$this->expectExceptionMessage($expectedMessage);
+			}
+		}
+
+		$validateHelper->validateIdentifySigners($data);
+
+		if (!$shouldThrow) {
+			$this->addToAssertionCount(1); // If we get here without exception, test passed
+		}
+	}
+
+	public static function providerValidateIdentifySigners(): array {
+		return [
+			'valid data with identify structure single method' => [
+				[
+					'users' => [
+						[
+							'identify' => [
+								'account' => 'user@example.com'
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'valid data with identify structure multiple methods' => [
+				[
+					'users' => [
+						[
+							'identify' => [
+								'account' => 'user@example.com',
+								'email' => 'user@example.com'
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'valid data with identifyMethods structure single method' => [
+				[
+					'users' => [
+						[
+							'identifyMethods' => [
+								['method' => 'account', 'value' => 'user@example.com']
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'valid data with identifyMethods structure multiple methods' => [
+				[
+					'users' => [
+						[
+							'identifyMethods' => [
+								['method' => 'account', 'value' => 'user@example.com'],
+								['method' => 'email', 'value' => 'user@example.com']
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'mixed structures in same data' => [
+				[
+					'users' => [
+						[
+							'identify' => [
+								'account' => 'user1@example.com'
+							]
+						],
+						[
+							'identifyMethods' => [
+								['method' => 'email', 'value' => 'user2@example.com']
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'empty data structure' => [
+				[],
+				true, // should throw
+				'No signers'
+			],
+			'missing users key' => [
+				['someOtherKey' => 'value'],
+				true, // should throw
+				'No signers'
+			],
+			'empty users array' => [
+				['users' => []],
+				true, // should throw
+				'No signers'
+			],
+			'users not array' => [
+				['users' => 'not-an-array'],
+				true, // should throw
+				'No signers'
+			],
+			'empty signer' => [
+				['users' => [[]]],
+				true, // should throw
+				'No signers'
+			],
+			'signer not array' => [
+				['users' => ['not-an-array']],
+				true, // should throw
+				'No signers'
+			],
+			'signer without identify methods' => [
+				['users' => [['someKey' => 'value']]],
+				true, // should throw
+				'No identify methods for signer'
+			],
+			'signer with empty identify' => [
+				['users' => [['identify' => []]]],
+				true, // should throw
+				'No identify methods for signer'
+			],
+			'signer with empty identifyMethods' => [
+				['users' => [['identifyMethods' => []]]],
+				true, // should throw
+				'No identify methods for signer'
+			],
+			'invalid identifyMethods structure - missing method' => [
+				[
+					'users' => [
+						[
+							'identifyMethods' => [
+								['value' => 'user@example.com'] // missing 'method'
+							]
+						]
+					]
+				],
+				true, // should throw
+				'Invalid identify method structure'
+			],
+			'invalid identifyMethods structure - missing value' => [
+				[
+					'users' => [
+						[
+							'identifyMethods' => [
+								['method' => 'email'] // missing 'value'
+							]
+						]
+					]
+				],
+				true, // should throw
+				'Invalid identify method structure'
+			],
+			'valid displayName within 64 characters' => [
+				[
+					'users' => [
+						[
+							'displayName' => 'Valid Display Name',
+							'identify' => [
+								'account' => 'user@example.com'
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'displayName exactly 64 characters' => [
+				[
+					'users' => [
+						[
+							'displayName' => str_repeat('A', 64),
+							'identify' => [
+								'account' => 'user@example.com'
+							]
+						]
+					]
+				],
+				false, // should not throw
+			],
+			'displayName too long - 65 characters' => [
+				[
+					'users' => [
+						[
+							'displayName' => str_repeat('A', 65),
+							'identify' => [
+								'account' => 'user@example.com'
+							]
+						]
+					]
+				],
+				true, // should throw
+				'Display name must not be longer than 64 characters'
+			],
+			'displayName too long - 100 characters' => [
+				[
+					'users' => [
+						[
+							'displayName' => str_repeat('B', 100),
+							'identify' => [
+								'account' => 'user@example.com'
+							]
+						]
+					]
+				],
+				true, // should throw
+				'Display name must not be longer than 64 characters'
+			],
 		];
 	}
 }

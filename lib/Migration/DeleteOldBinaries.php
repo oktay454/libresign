@@ -55,10 +55,12 @@ class DeleteOldBinaries implements IRepairStep {
 		$this->appData = $appDataFactory->get('libresign');
 	}
 
+	#[\Override]
 	public function getName(): string {
 		return 'Delete old binaries';
 	}
 
+	#[\Override]
 	public function run(IOutput $output): void {
 		$this->scan();
 		$this->output = $output;
@@ -108,7 +110,6 @@ class DeleteOldBinaries implements IRepairStep {
 	private function getSimpleFolderList(ISimpleFolder $node): array {
 		$reflection = new \ReflectionClass($node);
 		$reflectionProperty = $reflection->getProperty('folder');
-		$reflectionProperty->setAccessible(true);
 		$folder = $reflectionProperty->getValue($node);
 		$list = $folder->getDirectoryListing();
 		return $list;

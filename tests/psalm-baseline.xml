@@ -62,7 +62,7 @@
   </file>
   <file src="lib/Handler/CertificateEngine/CfsslHandler.php">
     <InvalidArgument>
-      <code><![CDATA[function () { }]]></code>
+      <code><![CDATA[function (): void { }]]></code>
     </InvalidArgument>
   </file>
   <file src="lib/Helper/Pagination.php">
@@ -90,6 +90,18 @@
     </MoreSpecificImplementedParamType>
     <UndefinedDocblockClass>
       <code><![CDATA[LoadSidebarListener]]></code>
+    </UndefinedDocblockClass>
+  </file>
+  <file src="lib/Listener/TwofactorGatewayListener.php">
+    <UndefinedClass>
+      <code><![CDATA[Factory]]></code>
+      <code><![CDATA[Factory]]></code>
+    </UndefinedClass>
+    <UndefinedDocblockClass>
+      <code><![CDATA[$gatewayFactory]]></code>
+      <code><![CDATA[$gatewayFactory]]></code>
+      <code><![CDATA[$gatewayFactory]]></code>
+      <code><![CDATA[$gatewayFactory]]></code>
     </UndefinedDocblockClass>
   </file>
   <file src="lib/Middleware/GlobalInjectionMiddleware.php">
@@ -133,35 +145,27 @@
       <code><![CDATA[private]]></code>
     </UndefinedClass>
   </file>
+  <file src="lib/Service/IdentifyMethod/SignatureMethod/TokenService.php">
+    <UndefinedClass>
+      <code><![CDATA[\OCA\TwoFactorGateway\Provider\Gateway\Factory]]></code>
+    </UndefinedClass>
+    <UndefinedDocblockClass>
+      <code><![CDATA[$gateway]]></code>
+      <code><![CDATA[\OCA\TwoFactorGateway\Provider\Gateway\IGateway]]></code>
+    </UndefinedDocblockClass>
+  </file>
+  <file src="lib/Service/IdentifyMethod/TwofactorGateway.php">
+    <UndefinedClass>
+      <code><![CDATA[Factory]]></code>
+    </UndefinedClass>
+    <UndefinedDocblockClass>
+      <code><![CDATA[$gatewayFactory]]></code>
+      <code><![CDATA[$gatewayFactory]]></code>
+    </UndefinedDocblockClass>
+  </file>
   <file src="lib/Service/Install/InstallService.php">
     <UndefinedClass>
       <code><![CDATA[Process]]></code>
-    </UndefinedClass>
-  </file>
-  <file src="lib/Service/Install/SignSetupService.php">
-    <UndefinedClass>
-      <code><![CDATA[$this->getCertificate()]]></code>
-      <code><![CDATA[$this->getCertificate()->currentCert]]></code>
-      <code><![CDATA[$this->getPrivateKey()]]></code>
-      <code><![CDATA[$this->getPrivateKey()]]></code>
-      <code><![CDATA[$this->getPrivateKey()]]></code>
-      <code><![CDATA[$this->getPrivateKey()]]></code>
-      <code><![CDATA[$x509->currentCert]]></code>
-      <code><![CDATA[?RSA]]></code>
-      <code><![CDATA[?X509]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[RSA]]></code>
-      <code><![CDATA[X509]]></code>
-      <code><![CDATA[X509]]></code>
-      <code><![CDATA[X509]]></code>
-      <code><![CDATA[X509]]></code>
-      <code><![CDATA[x509]]></code>
-      <code><![CDATA[x509]]></code>
     </UndefinedClass>
   </file>
   <file src="lib/Service/RequestSignatureService.php">

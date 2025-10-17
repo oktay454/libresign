@@ -61,10 +61,14 @@ OC.L10N.register(
     "Message" : "Mensaje",
     "Resource" : "Recurso",
     "Dependencies" : "Dependencias",
+    "Reminders" : "Recordatorios",
     "Yes" : "Sí",
     "No" : "No",
     "Reset to default" : "Restablecer al predeterminado",
+    "Username" : "Usuario",
+    "Optional" : "Opcional",
     "Forgot password?" : "¿Olvidaste tu contraseña?",
-    "No date" : "Sin fecha"
+    "No date" : "Sin fecha",
+    "Unknown" : "Desconocido"
 },
 "nplurals=3; plural=n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2;");

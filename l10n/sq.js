@@ -61,10 +61,15 @@ OC.L10N.register(
     "Message" : "Mesazh",
     "Resource" : "Burim",
     "Dependencies" : "Varësitë",
+    "Reminders" : "Kujtesë",
     "Yes" : "Yes",
     "No" : "Jo",
     "Reset to default" : "Rivendos tek të paracaktuarat",
+    "Invalid URL" : "URL e pavlefshme",
+    "Username" : "Emri i përdoruesit",
+    "Optional" : "Jo i detyrueshëm",
     "Name:" : "Emri",
-    "No date" : "No date"
+    "No date" : "No date",
+    "Unknown" : "I panjohur"
 },
 "nplurals=2; plural=(n != 1);");

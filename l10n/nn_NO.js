@@ -45,8 +45,12 @@ OC.L10N.register(
     "Current password" : "Passord",
     "New password" : "Nytt passord",
     "Resource" : "Ressurs",
+    "Reminders" : "Påminningar",
     "Yes" : "Ja",
     "No" : "Nei",
-    "No date" : "No date"
+    "Username" : "Brukarnamn",
+    "Optional" : "Valfritt",
+    "No date" : "No date",
+    "Unknown" : "Ukjend"
 },
 "nplurals=2; plural=(n != 1);");

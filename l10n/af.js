@@ -54,9 +54,12 @@ OC.L10N.register(
     "New password" : "Nuwe wagwoord",
     "Resource" : "Hulpbron",
     "Dependencies" : "Afhanklikhede",
+    "Reminders" : "Herinneringe",
     "Yes" : "Ja",
     "No" : "Nee",
     "Reset to default" : "Herstel na verstek",
+    "Username" : "Gebruikernaam",
+    "Optional" : "Opsioneel",
     "Forgot password?" : "Wagwoord vergeet?",
     "No date" : "Geen datum"
 },

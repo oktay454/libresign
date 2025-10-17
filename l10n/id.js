@@ -61,12 +61,12 @@ OC.L10N.register(
     "Settings" : "Setelan",
     "Loading …" : "Memuat …",
     "Name" : "Nama",
-    "No recommendations. Start typing." : "Tidak ada saran. Mulai mengetik.",
     "Update" : "Perbarui",
     "Choose" : "Pilih",
     "Send" : "Kirim",
     "Previous" : "Sebelumnya",
     "Next" : "Berikutnya",
+    "No recommendations. Start typing." : "Tidak ada saran. Mulai mengetik.",
     "Confirm" : "Konfirmasi",
     "Open file" : "Membuka berkas",
     "Administration" : "Administrasi",
@@ -96,8 +96,13 @@ OC.L10N.register(
     "Remove" : "Hapus",
     "Message" : "Pesan",
     "Dependencies" : "Ketergantungan",
+    "Reminders" : "Pengingat",
+    "on" : "pada",
     "Yes" : "Ya",
     "No" : "Tidak",
-    "No date" : "No date"
+    "Invalid URL" : "URL Tidak Valid",
+    "Username" : "Username",
+    "No date" : "No date",
+    "Unknown" : "Tidak diketahui"
 },
 "nplurals=1; plural=0;");

@@ -15,20 +15,17 @@ use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Handler\CertificateEngine\OrderCertificatesTrait;
 use OCA\Libresign\Handler\FooterHandler;
 use OCA\Libresign\Service\FolderService;
+use OCA\Libresign\Vendor\phpseclib3\File\ASN1;
 use OCP\Files\File;
 use OCP\IAppConfig;
 use OCP\IL10N;
 use OCP\ITempManager;
-use phpseclib3\File\ASN1;
 use Psr\Log\LoggerInterface;
 
 class Pkcs12Handler extends SignEngineHandler {
 	use OrderCertificatesTrait;
 	protected string $certificate = '';
 	private array $signaturesFromPoppler = [];
-	/**
-	 * Used by method self::getHandler()
-	 */
 	private ?JSignPdfHandler $jSignPdfHandler = null;
 
 	public function __construct(
@@ -58,11 +55,8 @@ class Pkcs12Handler extends SignEngineHandler {
 		}
 
 		for ($i = 0; $i < count($bytes['offset1']); $i++) {
-			// Starting position (in bytes) of the first part of the PDF that will be included in the validation.
 			$offset1 = (int)$bytes['offset1'][$i];
-			// Length (in bytes) of the first part.
 			$length1 = (int)$bytes['length1'][$i];
-			// Starting position (in bytes) of the second part, immediately after the signature.
 			$offset2 = (int)$bytes['offset2'][$i];
 
 			$signatureStart = $offset1 + $length1 + 1;
@@ -83,60 +77,97 @@ class Pkcs12Handler extends SignEngineHandler {
 	 * @throws LibresignException When is not a signed file
 	 * @return array
 	 */
+	#[\Override]
 	public function getCertificateChain($resource): array {
-		$signerCounter = 0;
 		$certificates = [];
+		$signerCounter = 0;
+
 		foreach ($this->getSignatures($resource) as $signature) {
-			// The signature could be invalid
-			$fromFallback = $this->popplerUtilsPdfSignFallback($resource, $signerCounter);
-			if ($fromFallback) {
-				$certificates[$signerCounter] = $fromFallback;
-			}
-			if (!$signature) {
-				$certificates[$signerCounter]['chain'][0]['signature_validation'] = $this->getReadableSigState('Digest Mismatch.');
-				$signerCounter++;
-				continue;
-			}
-
-			if (!isset($fromFallback['signingTime'])) {
-				// Probably the best way to do this would be:
-				// ASN1::asn1map($decoded[0], Maps\TheMapName::MAP);
-				// But, what's the MAP to use?
-				//
-				// With maps also could be possible read all certificate data and
-				// maybe discart openssl at  this pint
-				try {
-					$decoded = ASN1::decodeBER($signature);
-					$certificates[$signerCounter]['signingTime'] = $decoded[0]['content'][1]['content'][0]['content'][4]['content'][0]['content'][3]['content'][1]['content'][1]['content'][0]['content'];
-				} catch (\Throwable) {
-				}
-			}
-
-			$pkcs7PemSignature = $this->der2pem($signature);
-			if (openssl_pkcs7_read($pkcs7PemSignature, $pemCertificates)) {
-				foreach ($pemCertificates as $certificateIndex => $pemCertificate) {
-					$parsed = openssl_x509_parse($pemCertificate);
-					foreach ($parsed as $key => $value) {
-						if (!isset($certificates[$signerCounter]['chain'][$certificateIndex][$key])) {
-							$certificates[$signerCounter]['chain'][$certificateIndex][$key] = $value;
-						} elseif ($key === 'name') {
-							$certificates[$signerCounter]['chain'][$certificateIndex][$key] = $value;
-						} elseif ($key === 'signatureTypeSN' && $certificates[$signerCounter]['chain'][$certificateIndex][$key] !== $value) {
-							$certificates[$signerCounter]['chain'][$certificateIndex][$key] = $value;
-						}
-					}
-					if (empty($certificates[$signerCounter]['chain'][$certificateIndex]['signature_validation'])) {
-						$certificates[$signerCounter]['chain'][$certificateIndex]['signature_validation'] = [
-							'id' => 1,
-							'label' => $this->l10n->t('Signature is valid.'),
-						];
-					}
-				}
-			};
-			$certificates[$signerCounter]['chain'] = $this->orderCertificates($certificates[$signerCounter]['chain']);
+			$certificates[$signerCounter] = $this->processSignature($resource, $signature, $signerCounter);
 			$signerCounter++;
 		}
 		return $certificates;
+	}
+
+	private function processSignature($resource, ?string $signature, int $signerCounter): array {
+		$fromFallback = $this->popplerUtilsPdfSignFallback($resource, $signerCounter);
+		$result = $fromFallback ?: [];
+
+		if (!$signature) {
+			$result['chain'][0]['signature_validation'] = $this->getReadableSigState('Digest Mismatch.');
+			return $result;
+		}
+
+		$decoded = ASN1::decodeBER($signature);
+		$result = $this->extractTimestampData($decoded, $result);
+
+		$chain = $this->extractCertificateChain($signature);
+		if (!empty($chain)) {
+			$result['chain'] = $this->orderCertificates($chain);
+			$this->enrichLeafWithPopplerData($result, $fromFallback);
+		}
+		return $result;
+	}
+
+	private function extractTimestampData(array $decoded, array $result): array {
+		$tsa = new TSA();
+
+		try {
+			$timestampData = $tsa->extract($decoded);
+			if (!empty($timestampData['genTime']) || !empty($timestampData['policy']) || !empty($timestampData['serialNumber'])) {
+				$result['timestamp'] = $timestampData;
+			}
+		} catch (\Throwable $e) {
+		}
+
+		if (!isset($result['signingTime']) || !$result['signingTime'] instanceof \DateTime) {
+			$result['signingTime'] = $tsa->getSigninTime($decoded);
+		}
+		return $result;
+	}
+
+	private function extractCertificateChain(string $signature): array {
+		$pkcs7PemSignature = $this->der2pem($signature);
+		$pemCertificates = [];
+
+		if (!openssl_pkcs7_read($pkcs7PemSignature, $pemCertificates)) {
+			return [];
+		}
+
+		$chain = [];
+		foreach ($pemCertificates as $index => $pemCertificate) {
+			$parsed = openssl_x509_parse($pemCertificate);
+			if ($parsed) {
+				$parsed['signature_validation'] = [
+					'id' => 1,
+					'label' => $this->l10n->t('Signature is valid.'),
+				];
+				$chain[$index] = $parsed;
+			}
+		}
+
+		return $chain;
+	}
+
+	private function enrichLeafWithPopplerData(array &$result, array $fromFallback): void {
+		if (empty($fromFallback['chain'][0]) || empty($result['chain'][0])) {
+			return;
+		}
+
+		$popplerData = $fromFallback['chain'][0];
+		$leafCert = &$result['chain'][0];
+
+		$popplerOnlyFields = ['field', 'range', 'certificate_validation'];
+		foreach ($popplerOnlyFields as $field) {
+			if (isset($popplerData[$field])) {
+				$leafCert[$field] = $popplerData[$field];
+			}
+		}
+
+		if (isset($popplerData['signature_validation'])
+			&& (!isset($leafCert['signature_validation']) || $leafCert['signature_validation']['id'] !== 1)) {
+			$leafCert['signature_validation'] = $popplerData['signature_validation'];
+		}
 	}
 
 	private function popplerUtilsPdfSignFallback($resource, int $signerCounter): array {
@@ -166,13 +197,12 @@ class Pkcs12Handler extends SignEngineHandler {
 				continue;
 			}
 
-
 			$match = [];
 			$isSecondLevel = preg_match('/^\s+-\s(?<key>.+):\s(?<value>.*)/', $item, $match);
 			if ($isSecondLevel) {
 				switch ((string)$match['key']) {
 					case 'Signing Time':
-						$this->signaturesFromPoppler[$lastSignature]['signingTime'] = DateTime::createFromFormat('M d Y H:i:s', $match['value']);
+						$this->signaturesFromPoppler[$lastSignature]['signingTime'] = DateTime::createFromFormat('M d Y H:i:s', $match['value'], new \DateTimeZone('UTC'));
 						break;
 					case 'Signer full Distinguished Name':
 						$this->signaturesFromPoppler[$lastSignature]['chain'][0]['subject'] = $this->parseDistinguishedNameWithMultipleValues($match['value']);
@@ -317,6 +347,7 @@ class Pkcs12Handler extends SignEngineHandler {
 		return $this->$property;
 	}
 
+	#[\Override]
 	public function sign(): File {
 		$signedContent = $this->getHandler()
 			->setCertificate($this->getCertificate())

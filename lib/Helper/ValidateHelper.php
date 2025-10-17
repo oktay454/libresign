@@ -503,6 +503,102 @@ class ValidateHelper {
 		}
 	}
 
+	public function validateIdentifySigners(array $data): void {
+		$this->validateSignersDataStructure($data);
+
+		foreach ($data['users'] as $signer) {
+			$this->validateSignerData($signer);
+		}
+	}
+
+	private function validateSignersDataStructure(array $data): void {
+		if (empty($data) || !array_key_exists('users', $data) || !is_array($data['users']) || empty($data['users'])) {
+			throw new LibresignException($this->l10n->t('No signers'));
+		}
+	}
+
+	private function validateSignerData(mixed $signer): void {
+		if (!is_array($signer) || empty($signer)) {
+			throw new LibresignException($this->l10n->t('No signers'));
+		}
+
+		$this->validateSignerDisplayName($signer);
+		$this->validateSignerIdentifyMethods($signer);
+	}
+
+	private function validateSignerDisplayName(array $signer): void {
+		if (isset($signer['displayName']) && strlen($signer['displayName']) > 64) {
+			// It's an api error, don't translate
+			throw new LibresignException('Display name must not be longer than 64 characters');
+		}
+	}
+
+	private function validateSignerIdentifyMethods(array $signer): void {
+		$normalizedMethods = $this->normalizeIdentifyMethods($signer);
+
+		foreach ($normalizedMethods as $method) {
+			$this->validateIdentifyMethodForRequest($method['name'], $method['value']);
+		}
+	}
+
+	/**
+	 * @todo unify the key to be only 'identify' or only 'identifyMethods'
+	 */
+	private function normalizeIdentifyMethods(array $signer): array {
+		$key = array_key_exists('identifyMethods', $signer) ? 'identifyMethods' : 'identify';
+
+		if (empty($signer[$key]) || !is_array($signer[$key])) {
+			throw new LibresignException('No identify methods for signer');
+		}
+
+		$normalizedMethods = [];
+
+		foreach ($signer[$key] as $name => $data) {
+			$normalizedMethods[] = $this->normalizeIdentifyMethodEntry($key, $name, $data);
+		}
+		return $normalizedMethods;
+	}
+
+	/**
+	 * Extracted from normalizeIdentifyMethods to reduce cyclomatic complexity.
+	 */
+	private function normalizeIdentifyMethodEntry(string $key, $name, $data): array {
+		if ($key === 'identifyMethods') {
+			return $this->normalizeIdentifyMethodsStructure($data);
+		} else {
+			return $this->normalizeIdentifyStructure($name, $data);
+		}
+	}
+
+	private function normalizeIdentifyMethodsStructure(mixed $data): array {
+		if (!is_array($data) || !array_key_exists('method', $data) || !array_key_exists('value', $data)) {
+			throw new LibresignException('Invalid identify method structure');
+		}
+
+		return [
+			'name' => $data['method'],
+			'value' => $data['value'],
+		];
+	}
+
+	private function normalizeIdentifyStructure(string $name, mixed $value): array {
+		return [
+			'name' => $name,
+			'value' => $value,
+		];
+	}
+
+	private function validateIdentifyMethodForRequest(string $name, string $identifyValue): void {
+		$identifyMethod = $this->identifyMethodService->getInstanceOfIdentifyMethod($name, $identifyValue);
+		$identifyMethod->validateToRequest();
+
+		$signatureMethods = $identifyMethod->getSignatureMethods();
+		if (empty($signatureMethods)) {
+			// It's an api error, don't translate
+			throw new LibresignException('No signature methods for identify method ' . $name);
+		}
+	}
+
 	public function validateExistingFile(array $data): void {
 		if (isset($data['uuid'])) {
 			$this->validateFileUuid($data);

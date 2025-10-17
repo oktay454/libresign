@@ -19,8 +19,8 @@ use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Helper\JSActions;
 use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\AbstractSignatureMethod;
 use OCA\Libresign\Service\SessionService;
+use OCA\Libresign\Vendor\Wobeto\EmailBlur\Blur;
 use OCP\IUser;
-use Wobeto\EmailBlur\Blur;
 
 abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 	protected IdentifyMethod $entity;
@@ -47,46 +47,64 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 		$this->cleanEntity();
 	}
 
+	#[\Override]
 	public static function getId(): string {
 		$id = lcfirst(substr(strrchr(static::class, '\\'), 1));
 		return $id;
 	}
 
+	#[\Override]
 	public function getName(): string {
 		return $this->name;
 	}
 
+	#[\Override]
 	public function getFriendlyName(): string {
 		return $this->friendlyName;
 	}
 
+	#[\Override]
+	public function setFriendlyName(string $friendlyName): void {
+		$this->friendlyName = $friendlyName;
+	}
+
+	#[\Override]
 	public function setCodeSentByUser(string $code): void {
 		$this->codeSentByUser = $code;
 	}
 
+	#[\Override]
 	public function cleanEntity(): void {
 		$this->entity = new IdentifyMethod();
 		$this->entity->setIdentifierKey($this->name);
 	}
 
+	#[\Override]
 	public function setEntity(IdentifyMethod $entity): void {
 		$this->entity = $entity;
 	}
 
+	#[\Override]
 	public function getEntity(): IdentifyMethod {
 		return $this->entity;
 	}
 
+	#[\Override]
 	public function signatureMethodsToArray(): array {
 		return array_map(fn (AbstractSignatureMethod $method) => [
-			'label' => $method->friendlyName,
+			'label' => $method->getFriendlyName(),
 			'name' => $method->getName(),
 			'enabled' => $method->isEnabled(),
 		], $this->signatureMethods);
 	}
 
+	public function getAvailableSignatureMethods(): array {
+		return $this->availableSignatureMethods;
+	}
+
+	#[\Override]
 	public function getEmptyInstanceOfSignatureMethodByName(string $name): AbstractSignatureMethod {
-		if (!in_array($name, $this->availableSignatureMethods)) {
+		if (!in_array($name, $this->getAvailableSignatureMethods())) {
 			throw new InvalidArgumentException(sprintf('%s is not a valid signature method of identify method %s', $name, $this->getName()));
 		}
 		$className = 'OCA\Libresign\Service\IdentifyMethod\\SignatureMethod\\' . ucfirst($name);
@@ -102,15 +120,18 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 	/**
 	 * @return AbstractSignatureMethod[]
 	 */
+	#[\Override]
 	public function getSignatureMethods(): array {
 		return $this->signatureMethods;
 	}
 
+	#[\Override]
 	public function getSettings(): array {
 		$this->getSettingsFromDatabase();
 		return $this->settings;
 	}
 
+	#[\Override]
 	public function notify(): bool {
 		if (!$this->willNotify) {
 			return false;
@@ -125,19 +146,24 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 		return true;
 	}
 
+	#[\Override]
 	public function willNotifyUser(bool $willNotify): void {
 		$this->willNotify = $willNotify;
 	}
 
+	#[\Override]
 	public function validateToRequest(): void {
 	}
 
+	#[\Override]
 	public function validateToCreateAccount(string $value): void {
 	}
 
+	#[\Override]
 	public function validateToIdentify(): void {
 	}
 
+	#[\Override]
 	public function validateToSign(): void {
 	}
 
@@ -284,7 +310,7 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 		$default = array_merge(
 			[
 				'name' => $this->name,
-				'friendly_name' => $this->friendlyName,
+				'friendly_name' => $this->getFriendlyName(),
 				'enabled' => true,
 				'mandatory' => true,
 				'signatureMethods' => $this->signatureMethodsToArray(),
@@ -310,7 +336,8 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 			return $carry;
 		}, []);
 		$enabled = false;
-		foreach ($this->availableSignatureMethods as $signatureMethodName) {
+		$availableSignatureMethods = $this->getAvailableSignatureMethods();
+		foreach ($availableSignatureMethods as $signatureMethodName) {
 			$this->signatureMethods[$signatureMethodName]
 				= $this->getEmptyInstanceOfSignatureMethodByName($signatureMethodName);
 			if (isset($this->settings['signatureMethods'][$signatureMethodName]['enabled'])
@@ -318,6 +345,13 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 			) {
 				$this->signatureMethods[$signatureMethodName]->enable();
 				$enabled = true;
+			}
+		}
+		if (isset($this->settings['signatureMethods'])) {
+			foreach (array_keys($this->settings['signatureMethods']) as $signatureMethodName) {
+				if (!in_array($signatureMethodName, $availableSignatureMethods, true)) {
+					unset($this->settings['signatureMethods'][$signatureMethodName]);
+				}
 			}
 		}
 		if (!$enabled && $this->defaultSignatureMethod) {
@@ -338,11 +372,13 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 		return $customConfig;
 	}
 
+	#[\Override]
 	public function save(): void {
 		$this->identifyService->save($this->getEntity());
 		$this->notify();
 	}
 
+	#[\Override]
 	public function delete(): void {
 		$this->identifyService->delete($this->getEntity());
 	}
@@ -354,6 +390,7 @@ abstract class AbstractIdentifyMethod implements IIdentifyMethod {
 		}
 	}
 
+	#[\Override]
 	public function validateToRenew(?IUser $user = null): void {
 		$this->throwIfMaximumValidityExpired();
 		$this->throwIfAlreadySigned();

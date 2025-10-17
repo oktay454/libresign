@@ -44,7 +44,7 @@ jobs:
               - 'lib/**'
               - 'templates/**'
               - 'tests/**'
-              - 'vendor/**'
+              - '3rdparty/**'
               - 'vendor-bin/**'
               - '.php-cs-fixer.dist.php'
               - 'composer.json'
@@ -98,10 +98,12 @@ jobs:
       - name: Checkout app
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          persist-credentials: false
+          submodules: true
           path: apps/${{ env.APP_NAME }}
 
       - name: Set up php ${{ matrix.php-versions }}
-        uses: shivammathur/setup-php@ec406be512d7077f68eed36e63f4d91bc006edc4 # v2
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # v2
         with:
           php-version: ${{ matrix.php-versions }}
           tools: phpunit
@@ -109,6 +111,8 @@ jobs:
           extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, json, libxml, mbstring, openssl, pcntl, posix, session, simplexml, xmlreader, xmlwriter, zip, zlib, mysql, pdo_mysql
           coverage: none
           ini-file: development
+          # Temporary workaround for missing pcntl_* in PHP 8.3
+          ini-values: disable_functions=
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -120,12 +124,9 @@ jobs:
       - name: Set up dependencies
         working-directory: apps/${{ env.APP_NAME }}
         run: |
+          composer remove nextcloud/ocp --dev --no-scripts
           composer install --no-dev
           composer --working-dir=tests/integration install
-
-      - name: Prevent Nextcloud OCP outdated
-        working-directory: apps/${{ env.APP_NAME }}
-        run: make updateocp
 
       - name: Set up Nextcloud
         env:
@@ -149,11 +150,13 @@ jobs:
           ./occ app:enable --force notifications
           git clone --depth 1 -b ${{ matrix.server-versions }} https://github.com/nextcloud/activity apps/activity
           ./occ app:enable --force activity
+          git clone --depth 1 -b main https://github.com/nextcloud/guests apps/guests
           ./occ app:enable --force guests
           ./occ config:system:set mail_smtpport --value 1025 --type integer
           ./occ config:system:set mail_smtphost --value mailhog
           ./occ config:system:set allow_local_remote_servers --value true --type boolean
           ./occ config:system:set auth.bruteforce.protection.enabled --value false --type boolean
+          ./occ config:app:set dav enableDefaultContact --value false --type boolean
 
       - name: Run behat
         working-directory: apps/${{ env.APP_NAME }}/tests/integration

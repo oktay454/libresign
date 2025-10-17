@@ -8,10 +8,8 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Service\IdentifyMethod\SignatureMethod;
 
-use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\JSActions;
 use OCA\Libresign\Service\IdentifyMethod\IdentifyService;
-use Wobeto\EmailBlur\Blur;
+use OCA\Libresign\Vendor\Wobeto\EmailBlur\Blur;
 
 class EmailToken extends AbstractSignatureMethod implements IToken {
 	public function __construct(
@@ -19,32 +17,27 @@ class EmailToken extends AbstractSignatureMethod implements IToken {
 		protected TokenService $tokenService,
 	) {
 		// TRANSLATORS Name of possible authenticator method. This signalize that the signer could be identified by email
-		$this->friendlyName = $this->identifyService->getL10n()->t('Email token');
+		$this->setFriendlyName($this->identifyService->getL10n()->t('Email token'));
 		parent::__construct(
 			$identifyService,
 		);
 	}
 
+	#[\Override]
 	public function validateToSign(): void {
 		$this->throwIfInvalidToken();
 	}
 
+	#[\Override]
 	public function toArray(): array {
 		$entity = $this->getEntity();
 
 		$email = match ($entity->getIdentifierKey()) {
 			'email' => $entity->getIdentifierValue(),
 			'account' => $this->identifyService->getUserManager()->get($entity->getIdentifierValue())
-				?->getEMailAddress(),
-			default => null,
+				?->getEMailAddress() ?? '',
+			default => '',
 		};
-
-		if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-			throw new LibresignException(json_encode([
-				'action' => JSActions::ACTION_DO_NOTHING,
-				'errors' => [['message' => $this->identifyService->getL10n()->t('Invalid email')]],
-			]));
-		}
 
 		$emailLowercase = strtolower($email);
 
@@ -61,8 +54,8 @@ class EmailToken extends AbstractSignatureMethod implements IToken {
 		$return['identifyMethod'] = $entity->getIdentifierKey();
 		$return['needCode'] = $needCode;
 		$return['hasConfirmCode'] = $hasConfirmCode;
-		$return['blurredEmail'] = $this->blurEmail($emailLowercase);
-		$return['hashOfEmail'] = md5($emailLowercase);
+		$return['blurredEmail'] = $emailLowercase ? $this->blurEmail($emailLowercase) : '';
+		$return['hashOfEmail'] = $emailLowercase ? md5($emailLowercase) : '';
 		return $return;
 	}
 
@@ -71,14 +64,15 @@ class EmailToken extends AbstractSignatureMethod implements IToken {
 		return $blur->make();
 	}
 
-	public function requestCode(string $identify): void {
+	#[\Override]
+	public function requestCode(string $identifier, string $method): void {
 		$signRequestMapper = $this->identifyService->getSignRequestMapper();
 		$signRequest = $signRequestMapper->getById($this->getEntity()->getSignRequestId());
 		$displayName = $signRequest->getDisplayName();
-		if ($identify === $displayName) {
+		if ($identifier === $displayName) {
 			$displayName = '';
 		}
-		$code = $this->tokenService->sendCodeByEmail($identify, $displayName);
+		$code = $this->tokenService->sendCodeByEmail($identifier, $displayName);
 		$this->getEntity()->setCode($code);
 		$this->identifyService->save($this->getEntity());
 	}

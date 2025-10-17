@@ -37,16 +37,18 @@ class Email extends AbstractIdentifyMethod {
 		private LoggerInterface $logger,
 	) {
 		// TRANSLATORS Name of possible authenticator method. This signalize that the signer could be identified by email
-		$this->friendlyName = $this->identifyService->getL10n()->t('Email');
+		$this->setFriendlyName($this->identifyService->getL10n()->t('Email'));
 		parent::__construct(
 			$identifyService,
 		);
 	}
 
+	#[\Override]
 	public function validateToRequest(): void {
 		$this->throwIfInvalidEmail();
 	}
 
+	#[\Override]
 	public function validateToIdentify(): void {
 		$this->throwIfAccountAlreadyExists();
 		$this->throwIfIsAuthenticatedWithDifferentAccount();
@@ -59,6 +61,7 @@ class Email extends AbstractIdentifyMethod {
 		$this->updateIdentifiedAt();
 	}
 
+	#[\Override]
 	public function validateToSign(): void {
 		$this->throwIfAccountAlreadyExists();
 		$this->throwIfIsAuthenticatedWithDifferentAccount();
@@ -171,6 +174,7 @@ class Email extends AbstractIdentifyMethod {
 		]));
 	}
 
+	#[\Override]
 	public function validateToCreateAccount(string $value): void {
 		$this->throwIfInvalidEmail();
 		$this->throwIfNotAllowedToCreateAccount();
@@ -198,6 +202,7 @@ class Email extends AbstractIdentifyMethod {
 		}
 	}
 
+	#[\Override]
 	public function getSettings(): array {
 		if (!empty($this->settings)) {
 			return $this->settings;
