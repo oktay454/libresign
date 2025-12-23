@@ -25,7 +25,7 @@ jobs:
       server-max: ${{ steps.versions.outputs.branches-max-list }}
     steps:
       - name: Checkout app
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
 
@@ -49,7 +49,7 @@ jobs:
         with:
           filters: |
             src:
-              - '.github/workflows/**'
+              - '.github/workflows/phpunit*'
               - 'appinfo/**'
               - 'lib/**'
               - 'templates/**'
@@ -72,9 +72,15 @@ jobs:
         server-versions: ${{ fromJson(needs.matrix.outputs.server-max) }}
         xdebug_mode: [debug, coverage]
 
-    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }}
+    name: SQLite PHP ${{ matrix.php-versions }} Nextcloud ${{ matrix.server-versions }} ${{ matrix.xdebug_mode }}
 
     steps:
+      - name: Abort if not PR to main with coverage
+        if: ${{ matrix.xdebug_mode == 'coverage' && github.event.pull_request.base.ref != 'main' }}
+        run: |
+          echo "Coverage only runs on PRs to main"
+          exit 0
+
       - name: Set app env
         if: ${{ env.APP_NAME == '' }}
         run: |
@@ -85,7 +91,7 @@ jobs:
         run: sudo apt update && sudo apt install poppler-utils
 
       - name: Checkout server
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
           submodules: true
@@ -93,14 +99,14 @@ jobs:
           ref: ${{ matrix.server-versions }}
 
       - name: Checkout app
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
           submodules: true
           path: apps/${{ env.APP_NAME }}
 
       - name: Set up php ${{ matrix.php-versions }}
-        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # v2.35.5
+        uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # v2.36.0
         with:
           php-version: ${{ matrix.php-versions }}
           # https://docs.nextcloud.com/server/stable/admin_manual/installation/source_installation.html#prerequisites-for-manual-installation
@@ -165,6 +171,7 @@ jobs:
         run: composer run test:coverage
 
       - name: Upload coverage results to Coveralls
+        if: matrix.xdebug_mode == 'coverage'
         working-directory: apps/${{ env.APP_NAME }}
         env:
           COVERALLS_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -217,11 +224,12 @@ jobs:
         run: if ${{ needs.changes.outputs.src != 'false' && needs.phpunit-sqlite.result != 'success' }}; then exit 1; fi
 
   finish-coverage:
-    needs: upload-coverage
+    if: ${{ github.event.pull_request.base.ref == 'main' }}
+    needs: phpunit-sqlite
     runs-on: ubuntu-latest
     steps:
       - name: Let Coveralls know that all tests have finished
-        uses: coverallsapp/github-action@v2.3.6
+        uses: coverallsapp/github-action@v2.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           parallel-finished: true

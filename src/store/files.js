@@ -15,6 +15,7 @@ import { generateOcsUrl } from '@nextcloud/router'
 
 import { useFilesSortingStore } from './filesSorting.js'
 import { useFiltersStore } from './filters.js'
+import { useIdentificationDocumentStore } from './identificationDocument.js'
 import { useSidebarStore } from './sidebar.js'
 import { useSignStore } from './sign.js'
 
@@ -72,7 +73,7 @@ export const useFilesStore = function(...args) {
 			},
 			async flushSelectedFile() {
 				const files = await this.getAllFiles({
-					nodeId: this.selectedNodeId,
+					'nodeIds[]': [this.selectedNodeId],
 				})
 				this.addFile(files[this.selectedNodeId])
 			},
@@ -132,6 +133,11 @@ export const useFilesStore = function(...args) {
 			},
 			canAddSigner(file) {
 				file = this.getFile(file)
+
+				if (this.isDocMdpNoChangesAllowed(file)) {
+					return false
+				}
+
 				return this.canRequestSign
 					&& (
 						!Object.hasOwn(file, 'requested_by')
@@ -139,6 +145,10 @@ export const useFilesStore = function(...args) {
 					)
 					&& !this.isPartialSigned(file)
 					&& !this.isFullSigned(file)
+			},
+			isDocMdpNoChangesAllowed(file) {
+				file = this.getFile(file)
+				return file.docmdpLevel === 1 && file.signers && file.signers.length > 0
 			},
 			canSave(file) {
 				file = this.getFile(file)
@@ -214,6 +224,10 @@ export const useFilesStore = function(...args) {
 						break
 					}
 				}
+				if (!signer.signingOrder && this.getFile().signatureFlow === 'ordered_numeric') {
+					const maxOrder = this.getFile().signers.reduce((max, s) => Math.max(max, s.signingOrder || 0), 0)
+					signer.signingOrder = maxOrder + 1
+				}
 				this.getFile().signers.push(signer)
 				const selected = this.selectedNodeId
 				this.selectFile(-1) // to force reactivity
@@ -227,15 +241,24 @@ export const useFilesStore = function(...args) {
 						signRequestId: signer.signRequestId,
 					}))
 				}
+
 				set(
 					this.files[this.selectedNodeId],
 					'signers',
 					this.files[this.selectedNodeId].signers.filter((i) => i.identify !== signer.identify),
 				)
+
+				if (this.getFile().signatureFlow === 'ordered_numeric' && signer.signingOrder) {
+					this.files[this.selectedNodeId].signers.forEach((s) => {
+						if (s.signingOrder && s.signingOrder > signer.signingOrder) {
+							s.signingOrder -= 1
+						}
+					})
+				}
 			},
 			async delete(file, deleteFile) {
 				file = this.getFile(file)
-				if (file?.uuid !== undefined) {
+				if (file?.nodeId) {
 					const url = deleteFile
 						? '/apps/libresign/api/v1/file/file_id/{fileId}'
 						: '/apps/libresign/api/v1/sign/file_id/{fileId}'
@@ -243,6 +266,11 @@ export const useFilesStore = function(...args) {
 						fileId: file.nodeId,
 					}))
 						.then(() => {
+							if (this.selectedNodeId === file.nodeId) {
+								const sidebarStore = useSidebarStore()
+								sidebarStore.hideSidebar()
+								this.selectedNodeId = 0
+							}
 							del(this.files, file.nodeId)
 							const index = this.ordered.indexOf(file.nodeId)
 							if (index > -1) {
@@ -254,11 +282,9 @@ export const useFilesStore = function(...args) {
 			},
 			async deleteMultiple(nodeIds, deleteFile) {
 				this.loading = true
-				nodeIds.forEach(async nodeId => {
+				for (const nodeId of nodeIds) {
 					await this.delete(this.files[nodeId], deleteFile)
-				})
-				const toRemove = nodeIds.filter(nodeId => (!this.files[nodeId]?.uuid))
-				del(this.files, ...toRemove)
+				}
 				this.loading = false
 			},
 			async upload({ file, name }) {
@@ -281,7 +307,7 @@ export const useFilesStore = function(...args) {
 							Object.entries(this.files).filter(([key, value]) => {
 								if (filter.signer_uuid) {
 									// return true when found signer by signer_uuid
-									return value.signers.filter((signer) => {
+									return value.signers?.filter((signer) => {
 										// filter signers by signer_uuid
 										return signer.sign_uuid === filter.signer_uuid
 									}).length > 0
@@ -336,6 +362,13 @@ export const useFilesStore = function(...args) {
 				response.data.ocs.data.data.forEach((file) => {
 					this.addFile(file)
 				})
+
+				if (response.data.ocs.data.settings) {
+					const identificationDocumentStore = useIdentificationDocumentStore()
+					identificationDocumentStore.setEnabled(response.data.ocs.data.settings.needIdentificationDocuments)
+					identificationDocumentStore.setWaitingApproval(response.data.ocs.data.settings.identificationDocumentsWaitingApproval)
+				}
+
 				this.loading = false
 				emit('libresign:files:updated')
 				return this.files
@@ -347,6 +380,72 @@ export const useFilesStore = function(...args) {
 			},
 			filesSorted() {
 				return this.ordered.map(key => this.files[key])
+			},
+			async saveWithVisibleElements({ visibleElements = [], signers = null, uuid = null, nodeId = null, signatureFlow = null }) {
+				const file = this.getFile()
+
+				let flowValue = signatureFlow || file.signatureFlow
+				if (typeof flowValue === 'number') {
+					const flowMap = { 0: 'none', 1: 'parallel', 2: 'ordered_numeric' }
+					flowValue = flowMap[flowValue] || 'parallel'
+				}
+
+				const config = {
+					url: generateOcsUrl('/apps/libresign/api/v1/request-signature'),
+					method: uuid || file.uuid ? 'patch' : 'post',
+					data: {
+						name: file?.name,
+						users: signers || file.signers,
+						visibleElements,
+						status: 0,
+						signatureFlow: flowValue,
+					},
+				}
+
+
+							if (uuid || file.uuid) {
+					config.data.uuid = uuid || file.uuid
+				} else {
+					config.data.file = {
+						fileId: nodeId || this.selectedNodeId,
+					}
+				}
+
+				const { data } = await axios(config)
+				this.addFile(data.ocs.data.data)
+				return data.ocs.data
+			},
+			async updateSignatureRequest({ visibleElements = [], signers = null, uuid = null, nodeId = null, status = 1, signatureFlow = null }) {
+				const file = this.getFile()
+				
+				let flowValue = signatureFlow || file.signatureFlow
+				if (typeof flowValue === 'number') {
+					const flowMap = { 0: 'none', 1: 'parallel', 2: 'ordered_numeric' }
+					flowValue = flowMap[flowValue] || 'parallel'
+				}
+				
+				const config = {
+					url: generateOcsUrl('/apps/libresign/api/v1/request-signature'),
+					method: uuid || file.uuid ? 'patch' : 'post',
+					data: {
+						name: file?.name,
+						users: signers || file.signers,
+						visibleElements,
+						status,
+						signatureFlow: flowValue,
+					},
+				}
+
+				if (uuid || file.uuid) {
+					config.data.uuid = uuid || file.uuid
+				} else {
+					config.data.file = {
+						fileId: nodeId || this.selectedNodeId,
+					}
+				}
+				const { data } = await axios(config)
+				this.addFile(data.ocs.data.data)
+				return data.ocs.data
 			},
 		},
 	})

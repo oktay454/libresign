@@ -37,23 +37,36 @@
 				</template>
 			</NcButton>
 		</div>
-		<NcLoadingIcon v-if="loading && !isRefreshing"
-			class="files-list__loading-icon"
-			:size="38"
-			:name="t('libresign', 'Loading …')" />
-		<NcEmptyContent v-else-if="!loading && isEmptyDir && filtersStore.activeChips.length === 0"
-			:name="t('libresign', 'There are no documents')"
-			:description="canRequestSign ? t('libresign', 'Choose the file to request signatures.') : ''">
-			<template #action>
-				<RequestPicker />
+		<FilesListVirtual :nodes="dirContentsSorted"
+			:loading="loading">
+			<template #empty>
+				<NcLoadingIcon
+					v-if="loading && !isRefreshing"
+					class="files-list__loading-icon"
+					:size="38"
+					:name="t('libresign', 'Loading …')" />
+
+				<NcEmptyContent
+					v-else-if="!loading && isEmptyDir && filtersStore.activeChips.length === 0"
+					:name="t('libresign', 'There are no documents')"
+					:description="canRequestSign ? t('libresign', 'Choose the file to request signatures.') : ''">
+					<template v-if="canRequestSign" #action>
+						<RequestPicker />
+					</template>
+					<template #icon>
+						<FolderIcon />
+					</template>
+				</NcEmptyContent>
+
+				<NcEmptyContent
+					v-else-if="!loading && isEmptyDir && filtersStore.activeChips.length > 0"
+					:name="t('libresign', 'No documents found')">
+					<template #icon>
+						<FolderIcon />
+					</template>
+				</NcEmptyContent>
 			</template>
-			<template #icon>
-				<FolderIcon />
-			</template>
-		</NcEmptyContent>
-		<FilesListVirtual v-else
-			:nodes="dirContentsSorted"
-			:loading="loading" />
+		</FilesListVirtual>
 	</NcAppContent>
 </template>
 
@@ -65,7 +78,6 @@ import FolderIcon from 'vue-material-design-icons/Folder.vue'
 import ListViewIcon from 'vue-material-design-icons/FormatListBulletedSquare.vue'
 import ViewGridIcon from 'vue-material-design-icons/ViewGrid.vue'
 
-import { subscribe, unsubscribe } from '@nextcloud/event-bus'
 import { loadState } from '@nextcloud/initial-state'
 
 import NcAppContent from '@nextcloud/vue/components/NcAppContent'
@@ -126,13 +138,10 @@ export default {
 				: t('libresign', 'Switch to grid view')
 		},
 		dirContentsSorted() {
-			if (!this.isEmptyDir) {
-				return []
-			}
-			return this.dirContentsFiltered
+			return this.filesStore.filesSorted()
 		},
 		isEmptyDir() {
-			return Object.keys(this.filesStore.files).length === 0
+			return this.filesStore.filesSorted().length === 0
 		},
 		isRefreshing() {
 			return !this.isEmptyDir
@@ -142,11 +151,9 @@ export default {
 	async mounted() {
 		await this.filesStore.getAllFiles({ force_fetch: true })
 		this.loading = false
-		subscribe('libresign:visible-elements-saved', this.closeSidebar)
 		this.filesStore.disableIdentifySigner()
 	},
 	beforeUnmount() {
-		unsubscribe('libresign:visible-elements-saved')
 		this.filesStore.selectFile()
 	},
 	methods: {
@@ -155,9 +162,6 @@ export default {
 		},
 		toggleGridView() {
 			this.userConfigStore.update('grid_view', !this.userConfigStore.grid_view)
-		},
-		closeSidebar() {
-			this.filesStore.selectFile()
 		},
 	},
 }

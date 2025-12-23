@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Db;
 
+use OCA\Libresign\Enum\FileStatus;
 use OCP\AppFramework\Db\DoesNotExistException;
 use OCP\AppFramework\Db\QBMapper;
 use OCP\Comments\ICommentsManager;
@@ -167,6 +168,33 @@ class FileMapper extends QBMapper {
 		return $file;
 	}
 
+	public function fileIdExists(int $nodeId): bool {
+		$exists = array_filter($this->file, fn ($f) => $f->getNodeId() === $nodeId || $f->getSignedNodeId() === $nodeId);
+		if (!empty($exists)) {
+			return true;
+		}
+
+		$qb = $this->db->getQueryBuilder();
+
+		$qb->select('*')
+			->from($this->getTableName())
+			->where(
+				$qb->expr()->orX(
+					$qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId, IQueryBuilder::PARAM_INT)),
+					$qb->expr()->eq('signed_node_id', $qb->createNamedParameter($nodeId, IQueryBuilder::PARAM_INT))
+				)
+			);
+
+		$files = $this->findEntities($qb);
+		if (!empty($files)) {
+			foreach ($files as $file) {
+				$this->file[] = $file;
+			}
+			return true;
+		}
+		return false;
+	}
+
 	/**
 	 * @return File[]
 	 */
@@ -175,9 +203,9 @@ class FileMapper extends QBMapper {
 
 		$qb->select('lf.*')
 			->from($this->getTableName(), 'lf')
-			->join('lf', 'libresign_account_file', 'laf', 'laf.file_id = lf.id')
+			->join('lf', 'libresign_id_docs', 'lid', 'lid.file_id = lf.id')
 			->where(
-				$qb->expr()->eq('laf.user_id', $qb->createNamedParameter($userId))
+				$qb->expr()->eq('lid.user_id', $qb->createNamedParameter($userId))
 			);
 
 		$cursor = $qb->executeQuery();
@@ -218,22 +246,11 @@ class FileMapper extends QBMapper {
 		return 'not_libresign_file';
 	}
 
-	public function getTextOfStatus(int $status): ?string {
-		return match ($status) {
-			// TRANSLATORS Name of the status when document is not a LibreSign file
-			File::STATUS_NOT_LIBRESIGN_FILE => $this->l->t('not LibreSign file'),
-			// TRANSLATORS Name of the status that the document is still as a draft
-			File::STATUS_DRAFT => $this->l->t('draft'),
-			// TRANSLATORS Name of the status that the document can be signed
-			File::STATUS_ABLE_TO_SIGN => $this->l->t('available for signature'),
-			// TRANSLATORS Name of the status when the document has already been partially signed
-			File::STATUS_PARTIAL_SIGNED => $this->l->t('partially signed'),
-			// TRANSLATORS Name of the status when the document has been completely signed
-			File::STATUS_SIGNED => $this->l->t('signed'),
-			// TRANSLATORS Name of the status when the document was deleted
-			File::STATUS_DELETED => $this->l->t('deleted'),
-			default => '',
-		};
+	public function getTextOfStatus(int|FileStatus $status): string {
+		if (is_int($status)) {
+			$status = FileStatus::from($status);
+		}
+		return $status->getLabel($this->l);
 	}
 
 	public function neutralizeDeletedUser(string $userId, string $displayName): void {

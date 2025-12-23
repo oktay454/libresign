@@ -8,14 +8,20 @@ declare(strict_types=1);
 
 namespace OCA\Libresign\Handler\CertificateEngine;
 
+use OCA\Libresign\Db\CrlMapper;
+use OCA\Libresign\Enum\CertificateType;
+use OCA\Libresign\Exception\EmptyCertificateException;
 use OCA\Libresign\Exception\LibresignException;
-use OCA\Libresign\Helper\ConfigureCheckHelper;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Service\CertificatePolicyService;
+use OCA\Libresign\Service\SerialNumberService;
 use OCP\Files\AppData\IAppDataFactory;
 use OCP\IAppConfig;
 use OCP\IConfig;
 use OCP\IDateTimeFormatter;
 use OCP\ITempManager;
+use OCP\IURLGenerator;
+use Psr\Log\LoggerInterface;
 
 /**
  * Class FileMapper
@@ -32,15 +38,34 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		protected IDateTimeFormatter $dateTimeFormatter,
 		protected ITempManager $tempManager,
 		protected CertificatePolicyService $certificatePolicyService,
+		protected IURLGenerator $urlGenerator,
+		protected SerialNumberService $serialNumberService,
+		protected CaIdentifierService $caIdentifierService,
+		protected LoggerInterface $logger,
+		protected CrlMapper $crlMapper,
 	) {
-		parent::__construct($config, $appConfig, $appDataFactory, $dateTimeFormatter, $tempManager, $certificatePolicyService);
+		parent::__construct(
+			$config,
+			$appConfig,
+			$appDataFactory,
+			$dateTimeFormatter,
+			$tempManager,
+			$certificatePolicyService,
+			$urlGenerator,
+			$caIdentifierService,
+			$logger,
+		);
 	}
 
 	#[\Override]
 	public function generateRootCert(
 		string $commonName,
 		array $names = [],
-	): string {
+	): void {
+		if (empty($commonName)) {
+			throw new EmptyCertificateException('Common Name (CN) cannot be empty for root certificate');
+		}
+
 		$privateKey = openssl_pkey_new([
 			'private_key_bits' => 2048,
 			'private_key_type' => OPENSSL_KEYTYPE_RSA,
@@ -48,58 +73,103 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 
 		$csr = openssl_csr_new($this->getCsrNames(), $privateKey, ['digest_alg' => 'sha256']);
 		$options = $this->getRootCertOptions();
-		$x509 = openssl_csr_sign($csr, null, $privateKey, $days = 365 * 5, $options);
+
+		$caDays = $this->getCaExpiryInDays();
+
+		$subject = parent::getNames();
+		$subject['CN'] = $commonName;
+		$issuer = $subject;
+
+		$serialNumberString = $this->serialNumberService->generateUniqueSerial(
+			$commonName,
+			$this->caIdentifierService->getInstanceId(),
+			$this->caIdentifierService->getCaIdParsed()['generation'],
+			new \DateTime('+' . $caDays . ' days'),
+			'openssl',
+			$issuer,
+			$subject,
+			CertificateType::ROOT->value,
+		);
+		$serialNumber = (int)$serialNumberString;
+
+		$x509 = openssl_csr_sign($csr, null, $privateKey, $caDays, $options, $serialNumber);
 
 		openssl_csr_export($csr, $csrout);
 		openssl_x509_export($x509, $certout);
 		openssl_pkey_export($privateKey, $pkeyout);
 
-		$configPath = $this->getConfigPath();
+		$configPath = $this->getCurrentConfigPath();
 		CertificateHelper::saveFile($configPath . '/ca.csr', $csrout);
 		CertificateHelper::saveFile($configPath . '/ca.pem', $certout);
 		CertificateHelper::saveFile($configPath . '/ca-key.pem', $pkeyout);
-
-		return $pkeyout;
 	}
 
 	private function getRootCertOptions(): array {
-		$this->generateRootCertConfig();
-		$configPath = $this->getConfigPath();
+		$configFile = $this->generateCaConfig();
 
-		$options = [
+		return [
 			'digest_alg' => 'sha256',
-			'config' => $configPath . DIRECTORY_SEPARATOR . 'openssl.cnf',
+			'config' => $configFile,
 			'x509_extensions' => 'v3_ca',
 		];
-		return $options;
+	}
+
+	private function getLeafCertOptions(): array {
+		$configFile = $this->generateLeafConfig();
+
+		return [
+			'digest_alg' => 'sha256',
+			'config' => $configFile,
+			'x509_extensions' => 'v3_req',
+		];
 	}
 
 	#[\Override]
 	public function generateCertificate(): string {
-		$configPath = $this->getConfigPath();
+		$this->validateRootCertificate();
+
+		$configPath = $this->getCurrentConfigPath();
 		$rootCertificate = file_get_contents($configPath . DIRECTORY_SEPARATOR . 'ca.pem');
 		$rootPrivateKey = file_get_contents($configPath . DIRECTORY_SEPARATOR . 'ca-key.pem');
 		if (empty($rootCertificate) || empty($rootPrivateKey)) {
 			throw new LibresignException('Invalid root certificate');
 		}
 
+		$this->inheritRootSubjectFields($rootCertificate);
+
 		$privateKey = openssl_pkey_new([
 			'private_key_bits' => 2048,
 			'private_key_type' => OPENSSL_KEYTYPE_RSA,
 		]);
 
-		$csr = @openssl_csr_new($this->getCsrNames(), $privateKey);
+		$csr = @openssl_csr_new($this->getCsrNames(), $privateKey, ['digest_alg' => 'sha256']);
 		if ($csr === false) {
 			$message = openssl_error_string();
 			throw new LibresignException('OpenSSL error: ' . $message);
 		}
 
-		$x509 = openssl_csr_sign($csr, $rootCertificate, $rootPrivateKey, $this->expirity(), [
-			'config' => $this->getFilenameToLeafCert(),
-			// This will set "basicConstraints" to CA:FALSE, the default is CA:TRUE
-			// The signer certificate is not a Certificate Authority
-			'x509_extensions' => 'v3_req',
-		]);
+		$parsedRoot = openssl_x509_parse($rootCertificate);
+		/** @var array<string, mixed> $issuer */
+		$issuer = $parsedRoot['subject'] ?? [];
+
+		$subject = parent::getNames();
+		$subject['CN'] = $this->getCommonName();
+
+		$serialNumberString = $this->serialNumberService->generateUniqueSerial(
+			$this->getCommonName(),
+			$this->caIdentifierService->getInstanceId(),
+			$this->caIdentifierService->getCaIdParsed()['generation'],
+			new \DateTime('+' . $this->getLeafExpiryInDays() . ' days'),
+			'openssl',
+			$issuer,
+			$subject,
+			CertificateType::LEAF->value,
+		);
+		$serialNumber = (int)$serialNumberString;
+		$options = $this->getLeafCertOptions();
+
+		$x509 = openssl_csr_sign($csr, $rootCertificate, $rootPrivateKey, $this->getLeafExpiryInDays(), $options, $serialNumber);
+
 		return parent::exportToPkcs12(
 			$x509,
 			$privateKey,
@@ -113,66 +183,159 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 		);
 	}
 
-	private function getFilenameToLeafCert(): string {
-		$temporaryFile = $this->tempManager->getTemporaryFile('.cfg');
-		if (!$temporaryFile) {
-			throw new LibresignException('Failure to create temporary file to OpenSSL .cfg file');
-		}
-		// More information about x509v3: https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
-		$config = [
-			'v3_req' => [
-				'basicConstraints' => 'CA:FALSE',
-				'keyUsage' => 'digitalSignature, keyEncipherment, keyCertSign',
-				'extendedKeyUsage' => 'clientAuth, emailProtection',
-				'subjectAltName' => $this->getSubjectAltNames(),
-				'authorityKeyIdentifier' => 'keyid',
-				'subjectKeyIdentifier' => 'hash',
-			],
-		];
-		$oid = $this->certificatePolicyService->getOid();
-		$cps = $this->certificatePolicyService->getCps();
-		if ($oid && $cps) {
-			$config['v3_req']['certificatePolicies'] = '@policy_section';
-			$config['policy_section'] = [
-				'policyIdentifier' => $oid,
-				'CPS.1' => $cps,
+	private function inheritRootSubjectFields(string $rootCertificate): void {
+		$parsedRoot = openssl_x509_parse($rootCertificate);
+		if ($parsedRoot && isset($parsedRoot['subject']) && is_array($parsedRoot['subject'])) {
+			$map = [
+				'C' => 'country',
+				'ST' => 'state',
+				'L' => 'locality',
+				'O' => 'organization',
+				'OU' => 'organizationalUnit',
 			];
+			foreach ($parsedRoot['subject'] as $k => $v) {
+				if (isset($map[$k])) {
+					$setter = 'set' . ucfirst($map[$k]);
+					if (method_exists($this, $setter)) {
+						$this->$setter($v);
+					}
+				}
+			}
 		}
-		if (empty($config['v3_req']['subjectAltName'])) {
-			unset($config['v3_req']['subjectAltName']);
-		}
-		$config = CertificateHelper::arrayToIni($config);
-		file_put_contents($temporaryFile, $config);
-		return $temporaryFile;
 	}
 
-	private function generateRootCertConfig(): void {
-		// More information about x509v3: https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
+	private function generateCaConfig(): string {
+		$config = $this->buildCaCertificateConfig();
+		$this->cleanupCaConfig($config);
+
+		return $this->saveCaConfigFile($config);
+	}
+
+	private function generateLeafConfig(): string {
+		$config = $this->buildLeafCertificateConfig();
+		$this->cleanupLeafConfig($config);
+
+		return $this->saveLeafConfigFile($config);
+	}
+
+	/**
+	 * More information about x509v3: https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
+	 */
+	private function buildCaCertificateConfig(): array {
 		$config = [
+			'ca' => [
+				'default_ca' => 'CA_default'
+			],
+			'CA_default' => [
+				'default_crl_days' => 7,
+				'default_md' => 'sha256',
+				'preserve' => 'no',
+				'policy' => 'policy_anything'
+			],
+			'policy_anything' => [
+				'countryName' => 'optional',
+				'stateOrProvinceName' => 'optional',
+				'organizationName' => 'optional',
+				'organizationalUnitName' => 'optional',
+				'commonName' => 'supplied',
+				'emailAddress' => 'optional'
+			],
 			'v3_ca' => [
-				'basicConstraints' => 'critical, CA:TRUE',
+				'basicConstraints' => 'critical, CA:TRUE, pathlen:1',
 				'keyUsage' => 'critical, digitalSignature, keyCertSign',
 				'extendedKeyUsage' => 'clientAuth, emailProtection',
 				'subjectAltName' => $this->getSubjectAltNames(),
 				'authorityKeyIdentifier' => 'keyid',
 				'subjectKeyIdentifier' => 'hash',
+				'crlDistributionPoints' => 'URI:' . $this->getCrlDistributionUrl(),
+			],
+			'crl_ext' => [
+				'issuerAltName' => 'issuer:copy',
+				'authorityKeyIdentifier' => 'keyid:always',
+				'subjectKeyIdentifier' => 'hash'
+			]
+		];
+
+		$this->addCaPolicies($config);
+
+		return $config;
+	}
+
+	private function buildLeafCertificateConfig(): array {
+		$config = [
+			'v3_req' => [
+				'basicConstraints' => 'CA:FALSE',
+				'keyUsage' => 'digitalSignature, keyEncipherment, nonRepudiation',
+				'extendedKeyUsage' => 'clientAuth, emailProtection',
+				'subjectAltName' => $this->getSubjectAltNames(),
+				'authorityKeyIdentifier' => 'keyid:always,issuer:always',
+				'subjectKeyIdentifier' => 'hash',
+				'crlDistributionPoints' => 'URI:' . $this->getCrlDistributionUrl(),
 			],
 		];
+
+		$this->addLeafPolicies($config);
+
+		return $config;
+	}
+
+	private function addCaPolicies(array &$config): void {
 		$oid = $this->certificatePolicyService->getOid();
 		$cps = $this->certificatePolicyService->getCps();
-		if ($oid && $cps) {
-			$config['v3_ca']['certificatePolicies'] = '@policy_section';
-			$config['policy_section'] = [
-				'policyIdentifier' => $oid,
-				'CPS.1' => $cps,
-			];
+
+		if (!$oid || !$cps) {
+			return;
 		}
+
+		$config['v3_ca']['certificatePolicies'] = '@policy_section';
+		$config['policy_section'] = [
+			'policyIdentifier' => $oid,
+			'CPS.1' => $cps,
+		];
+	}
+
+	private function addLeafPolicies(array &$config): void {
+		$oid = $this->certificatePolicyService->getOid();
+		$cps = $this->certificatePolicyService->getCps();
+
+		if (!$oid || !$cps) {
+			return;
+		}
+
+		$config['v3_req']['certificatePolicies'] = '@policy_section';
+		$config['policy_section'] = [
+			'policyIdentifier' => $oid,
+			'CPS.1' => $cps,
+		];
+	}
+
+	private function cleanupCaConfig(array &$config): void {
 		if (empty($config['v3_ca']['subjectAltName'])) {
 			unset($config['v3_ca']['subjectAltName']);
 		}
-		$configFile = $this->getConfigPath() . '/openssl.cnf';
+	}
+
+	private function cleanupLeafConfig(array &$config): void {
+		if (empty($config['v3_req']['subjectAltName'])) {
+			unset($config['v3_req']['subjectAltName']);
+		}
+	}
+
+	private function saveCaConfigFile(array $config): string {
 		$iniContent = CertificateHelper::arrayToIni($config);
+		$configFile = $this->getCurrentConfigPath() . '/openssl.cnf';
 		CertificateHelper::saveFile($configFile, $iniContent);
+		return $configFile;
+	}
+
+	private function saveLeafConfigFile(array $config): string {
+		$iniContent = CertificateHelper::arrayToIni($config);
+		$temporaryFile = $this->tempManager->getTemporaryFile('.cfg');
+		if (!$temporaryFile) {
+			throw new LibresignException('Failure to create temporary file to OpenSSL .cfg file');
+		}
+		file_put_contents($temporaryFile, $iniContent);
+		return $temporaryFile;
 	}
 
 	private function getSubjectAltNames(): string {
@@ -203,9 +366,17 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 				$distinguishedNames['UID'] = $value;
 				continue;
 			}
+
 			$longName = $this->translateToLong($name);
 			$longName = lcfirst($longName) . 'Name';
-			$distinguishedNames[$longName] = $value;
+
+			if (is_array($value)) {
+				if (!empty($value)) {
+					$distinguishedNames[$longName] = implode(', ', $value);
+				}
+			} else {
+				$distinguishedNames[$longName] = $value;
+			}
 		}
 		if ($this->getCommonName()) {
 			$distinguishedNames['commonName'] = $this->getCommonName();
@@ -215,26 +386,42 @@ class OpenSslHandler extends AEngineHandler implements IEngineHandler {
 
 	#[\Override]
 	public function isSetupOk(): bool {
-		$ok = parent::isSetupOk();
-		if (!$ok) {
+		$configPath = $this->getCurrentConfigPath();
+		if (empty($configPath)) {
 			return false;
 		}
-		$configPath = $this->getConfigPath();
 		$certificate = file_exists($configPath . DIRECTORY_SEPARATOR . 'ca.pem');
 		$privateKey = file_exists($configPath . DIRECTORY_SEPARATOR . 'ca-key.pem');
 		return $certificate && $privateKey;
 	}
 
 	#[\Override]
-	public function configureCheck(): array {
-		if ($this->isSetupOk()) {
-			return [(new ConfigureCheckHelper())
-				->setSuccessMessage('Root certificate setup is working fine.')
-				->setResource('openssl-configure')];
-		}
-		return [(new ConfigureCheckHelper())
-			->setErrorMessage('OpenSSL (root certificate) not configured.')
-			->setResource('openssl-configure')
-			->setTip('Run occ libresign:configure:openssl --help')];
+	protected function getConfigureCheckResourceName(): string {
+		return 'openssl-configure';
+	}
+
+	#[\Override]
+	protected function getCertificateRegenerationTip(): string {
+		return 'Consider regenerating the root certificate with: occ libresign:configure:openssl --cn="Your CA Name"';
+	}
+
+	#[\Override]
+	protected function getEngineSpecificChecks(): array {
+		return [];
+	}
+
+	#[\Override]
+	protected function getSetupSuccessMessage(): string {
+		return 'Root certificate setup is working fine.';
+	}
+
+	#[\Override]
+	protected function getSetupErrorMessage(): string {
+		return 'OpenSSL (root certificate) not configured.';
+	}
+
+	#[\Override]
+	protected function getSetupErrorTip(): string {
+		return 'Run occ libresign:configure:openssl --help';
 	}
 }

@@ -11,10 +11,10 @@ namespace OCA\Libresign\Service;
 use InvalidArgumentException;
 use OC\Files\Filesystem;
 use OCA\Libresign\AppInfo\Application;
-use OCA\Libresign\Db\AccountFileMapper;
 use OCA\Libresign\Db\File as FileEntity;
 use OCA\Libresign\Db\FileMapper;
 use OCA\Libresign\Db\FileTypeMapper;
+use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Db\UserElement;
@@ -58,7 +58,6 @@ class AccountService {
 		private IMimeTypeDetector $mimeTypeDetector,
 		private FileMapper $fileMapper,
 		private FileTypeMapper $fileTypeMapper,
-		private AccountFileMapper $accountFileMapper,
 		private SignFileService $signFileService,
 		private RequestSignatureService $requestSignatureService,
 		private CertificateEngineFactory $certificateEngineFactory,
@@ -67,11 +66,12 @@ class AccountService {
 		private IMountProviderCollection $mountProviderCollection,
 		private NewUserMailHelper $newUserMail,
 		private IdentifyMethodService $identifyMethodService,
+		private IdentifyMethodMapper $identifyMethodMapper,
 		private ValidateHelper $validateHelper,
 		private IURLGenerator $urlGenerator,
 		private Pkcs12Handler $pkcs12Handler,
 		private IGroupManager $groupManager,
-		private AccountFileService $accountFileService,
+		private IdDocsService $idDocsService,
 		private SignerElementsService $signerElementsService,
 		private UserElementMapper $userElementMapper,
 		private FolderService $folderService,
@@ -140,35 +140,6 @@ class AccountService {
 		}
 	}
 
-	public function validateAccountFiles(array $files, IUser $user): void {
-		foreach ($files as $fileIndex => $file) {
-			$this->validateAccountFile($fileIndex, $file, $user);
-		}
-	}
-
-	private function validateAccountFile(int $fileIndex, array $file, IUser $user): void {
-		$profileFileTypes = $this->fileTypeMapper->getTypes();
-		if (!array_key_exists($file['type'], $profileFileTypes)) {
-			throw new LibresignException(json_encode([
-				'type' => 'danger',
-				'file' => $fileIndex,
-				'message' => $this->l10n->t('Invalid file type.')
-			]));
-		}
-
-		try {
-			$this->validateHelper->validateFileTypeExists($file['type']);
-			$this->validateHelper->validateNewFile($file, ValidateHelper::TYPE_ACCOUNT_DOCUMENT, $user);
-			$this->validateHelper->validateUserHasNoFileWithThisType($user->getUID(), $file['type']);
-		} catch (\Exception $e) {
-			throw new LibresignException(json_encode([
-				'type' => 'danger',
-				'file' => $fileIndex,
-				'message' => $e->getMessage()
-			]));
-		}
-	}
-
 	/**
 	 * Get signRequest by Uuid
 	 */
@@ -186,17 +157,7 @@ class AccountService {
 		$newUser->setDisplayName($signRequest->getDisplayName());
 		$newUser->setSystemEMailAddress($email);
 
-		// @todo implement this logic, the follow code is complex and dont work
-		// $identifyMethods = $this->identifyMethodService->getIdentifyMethodsFromSignRequestId($signRequest->getId());
-		// foreach ($identifyMethods as $name => $identifyMethod) {
-		// 	if ($name === IdentifyMethodService::IDENTIFY_ACCOUNT) {
-		// 		$entity = $identifyMethod->getEntity();
-		// 		if ($entity->getIdentifierKey() === IdentifyMethodService::IDENTIFY_ACCOUNT) {
-		// 			$identifyMethod->getEntity()->setIdentifierValue($newUser->getUID());
-		// 			$this->identifyMethodService->save($signRequest, false);
-		// 		}
-		// 	}
-		// }
+		$this->updateIdentifyMethodToAccount($signRequest->getId(), $email, $newUser->getUID());
 
 		if ($this->config->getAppValue('core', 'newUser.sendEmail', 'yes') === 'yes') {
 			try {
@@ -226,19 +187,45 @@ class AccountService {
 	}
 
 	/**
-	 * @return array[]
+	 * @return array<string, mixed>
 	 */
 	public function getConfig(?IUser $user = null): array {
 		$info['identificationDocumentsFlow'] = $this->appConfig->getValueBool(Application::APP_ID, 'identification_documents', false);
 		$info['hasSignatureFile'] = $this->hasSignatureFile($user);
 		$info['phoneNumber'] = $this->getPhoneNumber($user);
 		$info['isApprover'] = $this->validateHelper->userCanApproveValidationDocuments($user, false);
-		$info['grid_view'] = $this->getUserConfigGridView($user);
+		$info['id_docs_filters'] = $this->getUserConfigIdDocsFilters($user);
+		$info['id_docs_sort'] = $this->getUserConfigIdDocsSort($user);
+		$info['crl_filters'] = $this->getUserConfigCrlFilters($user);
+		$info['crl_sort'] = $this->getUserConfigCrlSort($user);
+		$info['grid_view'] = $this->getUserConfigByKey('grid_view', $user) === '1';
+		$info['signer_identify_tab'] = $this->getUserConfigByKey('signer_identify_tab', $user);
+
+		return array_filter($info);
+	}
+
+	public function getConfigFilters(?IUser $user = null): array {
+		$info['filter_modified'] = $this->getUserConfigByKey('filter_modified', $user);
+		$info['filter_status'] = $this->getUserConfigByKey('filter_status', $user);
 
 		return $info;
 	}
 
-
+	private function updateIdentifyMethodToAccount(int $signRequestId, string $email, string $uid): void {
+		$identifyMethods = $this->identifyMethodService->getIdentifyMethodsFromSignRequestId($signRequestId);
+		foreach ($identifyMethods as $name => $methods) {
+			if ($name === IdentifyMethodService::IDENTIFY_EMAIL) {
+				foreach ($methods as $identifyMethod) {
+					$entity = $identifyMethod->getEntity();
+					if ($entity->getIdentifierValue() === $email) {
+						$entity->setIdentifierKey(IdentifyMethodService::IDENTIFY_ACCOUNT);
+						$entity->setIdentifierValue($uid);
+						$this->identifyMethodMapper->update($entity);
+					}
+				}
+			}
+		}
+	}
 
 	private function getPhoneNumber(?IUser $user): string {
 		if (!$user) {
@@ -260,12 +247,68 @@ class AccountService {
 		}
 	}
 
-	private function getUserConfigGridView(?IUser $user = null): bool {
+	private function getUserConfigByKey(string $key, ?IUser $user = null): string {
 		if (!$user) {
-			return false;
+			return '';
 		}
 
-		return $this->config->getUserValue($user->getUID(), Application::APP_ID, 'grid_view', false) === '1';
+		return $this->config->getUserValue($user->getUID(), Application::APP_ID, $key);
+	}
+
+	private function getUserConfigIdDocsFilters(?IUser $user = null): array {
+		if (!$user) {
+			return [];
+		}
+
+		$value = $this->config->getUserValue($user->getUID(), Application::APP_ID, 'id_docs_filters', '');
+		if (empty($value)) {
+			return [];
+		}
+
+		$decoded = json_decode($value, true);
+		return is_array($decoded) ? $decoded : [];
+	}
+
+	private function getUserConfigCrlFilters(?IUser $user = null): array {
+		if (!$user || !$this->groupManager->isAdmin($user->getUID())) {
+			return [];
+		}
+
+		$value = $this->config->getUserValue($user->getUID(), Application::APP_ID, 'crl_filters', '');
+		if (empty($value)) {
+			return [];
+		}
+
+		$decoded = json_decode($value, true);
+		return is_array($decoded) ? $decoded : [];
+	}
+
+	private function getUserConfigCrlSort(?IUser $user): array {
+		if (!$user || !$this->groupManager->isAdmin($user->getUID())) {
+			return ['sortBy' => 'revoked_at', 'sortOrder' => 'DESC'];
+		}
+
+		$value = $this->config->getUserValue($user->getUID(), Application::APP_ID, 'crl_sort', '');
+		if (empty($value)) {
+			return ['sortBy' => 'revoked_at', 'sortOrder' => 'DESC'];
+		}
+
+		$decoded = json_decode($value, true);
+		return is_array($decoded) ? $decoded : ['sortBy' => 'revoked_at', 'sortOrder' => 'DESC'];
+	}
+
+	private function getUserConfigIdDocsSort(?IUser $user): array {
+		if (!$user || !$this->validateHelper->userCanApproveValidationDocuments($user, false)) {
+			return ['sortBy' => null, 'sortOrder' => null];
+		}
+
+		$value = $this->config->getUserValue($user->getUID(), Application::APP_ID, 'id_docs_sort', '');
+		if (empty($value)) {
+			return ['sortBy' => null, 'sortOrder' => null];
+		}
+
+		$decoded = json_decode($value, true);
+		return is_array($decoded) ? $decoded : ['sortBy' => null, 'sortOrder' => null];
 	}
 
 	/**
@@ -320,21 +363,11 @@ class AccountService {
 	}
 
 	public function addFilesToAccount(array $files, IUser $user): void {
-		$this->validateAccountFiles($files, $user);
-		foreach ($files as $fileData) {
-			$dataToSave = $fileData;
-			$dataToSave['userManager'] = $user;
-			$dataToSave['name'] = $fileData['name'] ?? $fileData['type'];
-			$file = $this->requestSignatureService->saveFile($dataToSave);
-
-			$this->accountFileService->addFile($file, $user, $fileData['type']);
-		}
+		$this->idDocsService->addIdDocs($files, $user);
 	}
 
 	public function deleteFileFromAccount(int $nodeId, IUser $user): void {
-		$this->validateHelper->validateAccountFileIsOwnedByUser($nodeId, $user->getUID());
-		$accountFile = $this->accountFileMapper->getByUserIdAndNodeId($user->getUID(), $nodeId);
-		$this->accountFileService->deleteFile($accountFile->getFileId(), $user->getUID());
+		$this->idDocsService->deleteIdDoc($nodeId, $user);
 	}
 
 	public function saveVisibleElements(array $elements, string $sessionId, ?IUser $user): void {

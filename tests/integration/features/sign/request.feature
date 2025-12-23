@@ -1,8 +1,10 @@
 Feature: request-signature
   Scenario: Get error when try to request to sign isn't manager
     Given user "signer1" exists
+    And as user "admin"
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And as user "signer1"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"base64":""} |
       | users | [{"identify":{"account":"signer1"}}] |
@@ -15,7 +17,8 @@ Feature: request-signature
 
   Scenario: Get error when try to request to sign without file name
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"invalid":""} |
       | users | [{"identify":{"account":"signer1"}}] |
@@ -31,10 +34,13 @@ Feature: request-signature
     And user "signer2" exists
     And set the email of user "signer1" to "signer1@domain.test"
     And set the email of user "signer2" to "signer2@domain.test"
+    And run the command "config:app:set activity notify_email_libresign_file_to_sign --value=1" with result code 0
+    And run the command "user:setting signer1 activity notify_email_libresign_file_to_sign 1" with result code 0
     And my inbox is empty
     And reset notifications of user "signer1"
     And reset notifications of user "signer2"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"} |
       | users | [{"identify":{"account":"signer1"}}] |
@@ -64,10 +70,14 @@ Feature: request-signature
     And user "signer2" exists
     And set the email of user "signer1" to "contact@domain.test"
     And set the email of user "signer2" to "contact@domain.test"
+    And run the command "config:app:set activity notify_email_libresign_file_to_sign --value=1" with result code 0
+    And run the command "user:setting signer1 activity notify_email_libresign_file_to_sign 1" with result code 0
+    And run the command "user:setting signer2 activity notify_email_libresign_file_to_sign 1" with result code 0
     And my inbox is empty
     And reset notifications of user "signer1"
     And reset notifications of user "signer2"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"} |
       | users | [{"identify":{"account":"signer1"}}] |
@@ -94,7 +104,8 @@ Feature: request-signature
   Scenario: Request to sign with error when the user is not authenticated
     Given as user "admin"
     And user "signer1" exists
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And reset notifications of user "signer1"
     And my inbox is empty
     And sending "post" to ocs "/apps/libresign/api/v1/request-signature"
@@ -115,7 +126,8 @@ Feature: request-signature
   Scenario: Request to sign with error when the authenticated user have an email different of signer
     Given as user "admin"
     And user "signer1" exists
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And reset notifications of user "signer1"
     And set the email of user "signer1" to "signer1@domain.test"
     And my inbox is empty
@@ -140,7 +152,8 @@ Feature: request-signature
   Scenario: Request to sign with error when the link was expired
     Given as user "admin"
     And my inbox is empty
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And run the command "config:app:set libresign maximum_validity --value=1 --type=integer" with result code 0
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"} |
@@ -162,7 +175,8 @@ Feature: request-signature
   Scenario: Request to sign with success when is necessary to renew the link
     Given as user "admin"
     And my inbox is empty
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And sending "post" to ocs "/apps/provisioning_api/api/v1/config/apps/libresign/identify_methods"
       | value | (string)[{"name":"email","enabled":true,"mandatory":true,"can_create_account":false}] |
     And sending "post" to ocs "/apps/libresign/api/v1/request-signature"
@@ -228,7 +242,8 @@ Feature: request-signature
   Scenario: Request to sign with success using account as identifier
     Given as user "admin"
     And user "signer1" exists
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And set the email of user "signer1" to "signer1@domain.test"
     And reset notifications of user "signer1"
     And my inbox is empty
@@ -266,7 +281,8 @@ Feature: request-signature
 
   Scenario: Request to sign with error using account as identifier with invalid email
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"}  |
       | users | [{"identify":{"account":"invaliddomain.test"}}] |
@@ -278,7 +294,8 @@ Feature: request-signature
 
   Scenario: Request to sign with error using email as account identifier
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"} |
       | users | [{"identify":{"account":"signer3@domain.test"}}] |
@@ -290,7 +307,9 @@ Feature: request-signature
 
   Scenario: Request to sign with success using email as identifier and URL as file
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And as user "admin"
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And my inbox is empty
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
       | file | {"url":"<BASE_URL>/apps/libresign/develop/pdf"} |
@@ -303,7 +322,8 @@ Feature: request-signature
   Scenario: Request to sign with success using account as identifier and URL as file
     Given as user "admin"
     And user "signer1" exists
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And set the email of user "signer1" to ""
     And reset notifications of user "signer1"
     And my inbox is empty
@@ -321,7 +341,8 @@ Feature: request-signature
 
   Scenario: Request to sign with success using email as identifier
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And set the email of user "signer1" to "signer1@domain.test"
     And my inbox is empty
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"
@@ -334,7 +355,8 @@ Feature: request-signature
 
   Scenario: Request to sign using email as identifier and when is necessary to use visible elements
     Given as user "admin"
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And sending "post" to ocs "/apps/provisioning_api/api/v1/config/apps/libresign/identify_methods"
       | value | (string)[{"name":"email","enabled":true,"mandatory":true,"can_create_account":false}] |
     And I send a file to be signed
@@ -363,7 +385,8 @@ Feature: request-signature
   Scenario: Request to sign with success using multiple users
     Given as user "admin"
     And user "signer1" exists
-    And run the command "libresign:configure:openssl --cn test" with result code 0
+    And sending "post" to ocs "/apps/libresign/api/v1/admin/certificate/openssl"
+      | rootCert | {"commonName":"test"} |
     And set the email of user "signer1" to ""
     And my inbox is empty
     When sending "post" to ocs "/apps/libresign/api/v1/request-signature"

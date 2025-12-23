@@ -10,6 +10,7 @@ namespace OCA\Libresign\Controller;
 
 use DateTimeInterface;
 use OCA\Libresign\AppInfo\Application;
+use OCA\Libresign\Enum\DocMdpLevel;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Handler\CertificateEngine\IEngineHandler;
@@ -17,6 +18,9 @@ use OCA\Libresign\Helper\ConfigureCheckHelper;
 use OCA\Libresign\ResponseDefinitions;
 use OCA\Libresign\Service\Certificate\ValidateService;
 use OCA\Libresign\Service\CertificatePolicyService;
+use OCA\Libresign\Service\DocMdpConfigService;
+use OCA\Libresign\Service\FooterService;
+use OCA\Libresign\Service\IdentifyMethodService;
 use OCA\Libresign\Service\Install\ConfigureCheckService;
 use OCA\Libresign\Service\Install\InstallService;
 use OCA\Libresign\Service\ReminderService;
@@ -27,6 +31,7 @@ use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\ApiRoute;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
 use OCP\AppFramework\Http\ContentSecurityPolicy;
+use OCP\AppFramework\Http\DataDownloadResponse;
 use OCP\AppFramework\Http\DataResponse;
 use OCP\AppFramework\Http\FileDisplayResponse;
 use OCP\Files\SimpleFS\InMemoryFile;
@@ -61,6 +66,9 @@ class AdminController extends AEnvironmentAwareController {
 		private CertificatePolicyService $certificatePolicyService,
 		private ValidateService $validateService,
 		private ReminderService $reminderService,
+		private FooterService $footerService,
+		private DocMdpConfigService $docMdpConfigService,
+		private IdentifyMethodService $identifyMethodService,
 	) {
 		parent::__construct(Application::APP_ID, $request);
 		$this->eventSource = $this->eventSourceFactory->create();
@@ -69,7 +77,7 @@ class AdminController extends AEnvironmentAwareController {
 	/**
 	 * Generate certificate using CFSSL engine
 	 *
-	 * @param array{commonName: string, names: array<string, array{value:string}>} $rootCert fields of root certificate
+	 * @param array{commonName: string, names: array<string, array{value:string|array<string>}>} $rootCert fields of root certificate
 	 * @param string $cfsslUri URI of CFSSL API
 	 * @param string $configPath Path of config files of CFSSL
 	 * @return DataResponse<Http::STATUS_OK, array{data: LibresignEngineHandler}, array{}>|DataResponse<Http::STATUS_UNAUTHORIZED, array{message: string}, array{}>
@@ -106,7 +114,7 @@ class AdminController extends AEnvironmentAwareController {
 	/**
 	 * Generate certificate using OpenSSL engine
 	 *
-	 * @param array{commonName: string, names: array<string, array{value:string}>} $rootCert fields of root certificate
+	 * @param array{commonName: string, names: array<string, array{value:string|array<string>}>} $rootCert fields of root certificate
 	 * @param string $configPath Path of config files of CFSSL
 	 * @return DataResponse<Http::STATUS_OK, array{data: LibresignEngineHandler}, array{}>|DataResponse<Http::STATUS_UNAUTHORIZED, array{message: string}, array{}>
 	 *
@@ -137,6 +145,38 @@ class AdminController extends AEnvironmentAwareController {
 		}
 	}
 
+	/**
+	 * Set certificate engine
+	 *
+	 * Sets the certificate engine (openssl, cfssl, or none) and automatically configures identify_methods when needed
+	 *
+	 * @param string $engine The certificate engine to use (openssl, cfssl, or none)
+	 * @return DataResponse<Http::STATUS_OK, array{engine: string, identify_methods: array<array<string, mixed>>}, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{message: string}, array{}>
+	 *
+	 * 200: OK
+	 * 400: Invalid engine
+	 */
+	#[NoCSRFRequired]
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/certificate/engine', requirements: ['apiVersion' => '(v1)'])]
+	public function setCertificateEngine(string $engine): DataResponse {
+		$validEngines = ['openssl', 'cfssl', 'none'];
+		if (!in_array($engine, $validEngines, true)) {
+			return new DataResponse(
+				['message' => 'Invalid engine. Must be one of: ' . implode(', ', $validEngines)],
+				Http::STATUS_BAD_REQUEST
+			);
+		}
+
+		$handler = $this->certificateEngineFactory->getEngine();
+		$handler->setEngine($engine);
+		$identifyMethods = $this->identifyMethodService->getIdentifyMethodsSettings();
+
+		return new DataResponse([
+			'engine' => $engine,
+			'identify_methods' => $identifyMethods,
+		]);
+	}
+
 	private function generateCertificate(
 		array $rootCert,
 		array $properties = [],
@@ -145,12 +185,18 @@ class AdminController extends AEnvironmentAwareController {
 		if (isset($rootCert['names'])) {
 			$this->validateService->validateNames($rootCert['names']);
 			foreach ($rootCert['names'] as $item) {
-				$names[$item['id']]['value'] = trim((string)$item['value']);
+				if (is_array($item['value'])) {
+					$trimmedValues = array_map('trim', $item['value']);
+					$names[$item['id']]['value'] = array_filter($trimmedValues, fn ($val) => $val !== '');
+				} else {
+					$names[$item['id']]['value'] = trim((string)$item['value']);
+				}
 			}
 		}
 		$this->validateService->validate('CN', $rootCert['commonName']);
 		$this->installService->generate(
 			trim((string)$rootCert['commonName']),
+			$properties['engine'],
 			$names,
 			$properties,
 		);
@@ -775,5 +821,165 @@ class AdminController extends AEnvironmentAwareController {
 		}
 
 		return new DataResponse(['status' => 'success']);
+	}
+
+	/**
+	 * Get footer template
+	 *
+	 * Returns the current footer template if set, otherwise returns the default template.
+	 *
+	 * @return DataResponse<Http::STATUS_OK, array{template: string, isDefault: bool, preview_width: int, preview_height: int}, array{}>
+	 *
+	 * 200: OK
+	 */
+	#[ApiRoute(verb: 'GET', url: '/api/{apiVersion}/admin/footer-template', requirements: ['apiVersion' => '(v1)'])]
+	public function getFooterTemplate(): DataResponse {
+		return new DataResponse([
+			'template' => $this->footerService->getTemplate(),
+			'isDefault' => $this->footerService->isDefaultTemplate(),
+			'preview_width' => $this->appConfig->getValueInt(Application::APP_ID, 'footer_preview_width', 595),
+			'preview_height' => $this->appConfig->getValueInt(Application::APP_ID, 'footer_preview_height', 100),
+		]);
+	}
+
+	/**
+	 * Save footer template and render preview
+	 *
+	 * Saves the footer template and returns the rendered PDF preview.
+	 *
+	 * @param string $template The Twig template to save (empty to reset to default)
+	 * @param int $width Width of preview in points (default: 595 - A4 width)
+	 * @param int $height Height of preview in points (default: 50)
+	 * @return DataDownloadResponse<Http::STATUS_OK, 'application/pdf', array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: string}, array{}>
+	 *
+	 * 200: OK
+	 * 400: Bad request
+	 */
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/footer-template', requirements: ['apiVersion' => '(v1)'])]
+	public function saveFooterTemplate(string $template = '', int $width = 595, int $height = 50) {
+		try {
+			$this->footerService->saveTemplate($template);
+			$pdf = $this->footerService->renderPreviewPdf('', $width, $height);
+
+			return new DataDownloadResponse($pdf, 'footer-preview.pdf', 'application/pdf');
+		} catch (\Exception $e) {
+			return new DataResponse([
+				'error' => $e->getMessage(),
+			], Http::STATUS_BAD_REQUEST);
+		}
+	}
+
+	/**
+	 * Preview footer template as PDF
+	 *
+	 * @NoAdminRequired
+	 * @NoCSRFRequired
+	 *
+	 * @param string $template Template to preview
+	 * @param int $width Width of preview in points (default: 595 - A4 width)
+	 * @param int $height Height of preview in points (default: 50)
+	 * @return DataDownloadResponse<Http::STATUS_OK, 'application/pdf', array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: string}, array{}>
+	 *
+	 * 200: OK
+	 * 400: Bad request
+	 */
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/footer-template/preview-pdf', requirements: ['apiVersion' => '(v1)'])]
+	public function footerTemplatePreviewPdf(string $template = '', int $width = 595, int $height = 50) {
+		try {
+			$pdf = $this->footerService->renderPreviewPdf($template ?: null, $width, $height);
+			return new DataDownloadResponse($pdf, 'footer-preview.pdf', 'application/pdf');
+		} catch (\Exception $e) {
+			return new DataResponse([
+				'error' => $e->getMessage(),
+			], Http::STATUS_BAD_REQUEST);
+		}
+	}
+
+	/**
+	 * Set signature flow configuration
+	 *
+	 * @param bool $enabled Whether to force a signature flow for all documents
+	 * @param string|null $mode Signature flow mode: 'parallel' or 'ordered_numeric' (only used when enabled is true)
+	 * @return DataResponse<Http::STATUS_OK, array{message: string}, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: string}, array{}>|DataResponse<Http::STATUS_INTERNAL_SERVER_ERROR, array{error: string}, array{}>
+	 *
+	 * 200: Configuration saved successfully
+	 * 400: Invalid signature flow mode provided
+	 * 500: Internal server error
+	 */
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/signature-flow/config', requirements: ['apiVersion' => '(v1)'])]
+	public function setSignatureFlowConfig(bool $enabled, ?string $mode = null): DataResponse {
+		try {
+			if (!$enabled) {
+				$this->appConfig->deleteKey(Application::APP_ID, 'signature_flow');
+				return new DataResponse([
+					'message' => $this->l10n->t('Settings saved'),
+				]);
+			}
+
+			if ($mode === null) {
+				return new DataResponse([
+					'error' => $this->l10n->t('Mode is required when signature flow is enabled.'),
+				], Http::STATUS_BAD_REQUEST);
+			}
+
+			try {
+				$signatureFlow = \OCA\Libresign\Enum\SignatureFlow::from($mode);
+			} catch (\ValueError) {
+				return new DataResponse([
+					'error' => $this->l10n->t('Invalid signature flow mode. Use "parallel" or "ordered_numeric".'),
+				], Http::STATUS_BAD_REQUEST);
+			}
+
+			$this->appConfig->setValueString(
+				Application::APP_ID,
+				'signature_flow',
+				$signatureFlow->value
+			);
+
+			return new DataResponse([
+				'message' => $this->l10n->t('Settings saved'),
+			]);
+		} catch (\Exception $e) {
+			return new DataResponse([
+				'error' => $e->getMessage(),
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
+	}
+
+	/**
+	 * Set DocMDP configuration
+	 *
+	 * @param bool $enabled Enable or disable DocMDP certification
+	 * @param int $defaultLevel Default DocMDP level (0-3): 0=none, 1=no changes, 2=form fill, 3=form fill + annotations
+	 * @return DataResponse<Http::STATUS_OK, array{message: string}, array{}>|DataResponse<Http::STATUS_BAD_REQUEST, array{error: string}, array{}>|DataResponse<Http::STATUS_INTERNAL_SERVER_ERROR, array{error: string}, array{}>
+	 *
+	 * 200: Configuration saved successfully
+	 * 400: Invalid DocMDP level provided
+	 * 500: Internal server error
+	 */
+	#[ApiRoute(verb: 'POST', url: '/api/{apiVersion}/admin/docmdp/config', requirements: ['apiVersion' => '(v1)'])]
+	public function setDocMdpConfig(bool $enabled, int $defaultLevel): DataResponse {
+		try {
+			$this->docMdpConfigService->setEnabled($enabled);
+
+			if ($enabled) {
+				$level = DocMdpLevel::tryFrom($defaultLevel);
+				if ($level === null) {
+					return new DataResponse([
+						'error' => $this->l10n->t('Invalid DocMDP level'),
+					], Http::STATUS_BAD_REQUEST);
+				}
+
+				$this->docMdpConfigService->setLevel($level);
+			}
+
+			return new DataResponse([
+				'message' => $this->l10n->t('Settings saved'),
+			]);
+		} catch (\Exception $e) {
+			return new DataResponse([
+				'error' => $e->getMessage(),
+			], Http::STATUS_INTERNAL_SERVER_ERROR);
+		}
 	}
 }

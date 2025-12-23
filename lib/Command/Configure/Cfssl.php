@@ -28,8 +28,8 @@ class Cfssl extends Base {
 			->addOption(
 				name: 'ou',
 				shortcut: null,
-				mode: InputOption::VALUE_REQUIRED,
-				description: 'Organization unit'
+				mode: InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY,
+				description: 'Organization unit (can be specified multiple times)'
 			)
 			->addOption(
 				name: 'o',
@@ -108,9 +108,9 @@ class Cfssl extends Base {
 
 		$this->installService->generate(
 			(string)$commonName,
+			'cfssl',
 			$names,
 			[
-				'engine' => 'cfssl',
 				'configPath' => $configPath,
 				'cfsslUri' => $cfsslUri,
 			]

@@ -23,15 +23,21 @@
     "Send" : "Ուղարկել",
     "Previous" : "Նախորդ",
     "Next" : "Հաջորդ",
+    "Close" : "Փակել",
     "Details" : "Մանրամասներ",
-    "Type" : "Տիպ",
     "Create account" : "Ստեղծել հաշիվ",
     "Password" : "Գաղտնաբառ",
     "Enter a password" : "Enter a password",
+    "Unknown" : "Անհայտ",
+    "Type" : "Տիպ",
+    "Comment" : "Մեկնաբանել",
+    "User" : "User",
+    "Type:" : "Տիպ.",
     "Ok" : "Լավ",
     "Today" : "Այսօր",
     "Modified" : "Փոփոխված",
     "1 file" : "1 ֆայլ",
+    "Version" : "Տարբերակ",
     "Password reset" : "Վերականգնել գաղտնաբառը",
     "New password" : "Նոր գաղտնաբառ",
     "Resource" : "Ռեսուրս",
@@ -41,6 +47,6 @@
     "Username" : "Օգտանուն",
     "Forgot password?" : "Մոռացե՞լ եք գաղտնաբառը։",
     "No date" : "No date",
-    "Unknown" : "Անհայտ"
+    "Notifications" : "Ծանուցում"
 },"pluralForm" :"nplurals=2; plural=(n != 1);"
 }

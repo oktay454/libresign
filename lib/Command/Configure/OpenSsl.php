@@ -28,8 +28,8 @@ class OpenSsl extends Base {
 			->addOption(
 				name: 'ou',
 				shortcut: null,
-				mode: InputOption::VALUE_REQUIRED,
-				description: 'Organization unit'
+				mode: InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY,
+				description: 'Organization unit (can be specified multiple times)'
 			)
 			->addOption(
 				name: 'o',
@@ -85,10 +85,8 @@ class OpenSsl extends Base {
 		}
 		$this->installService->generate(
 			(string)$commonName,
+			'openssl',
 			$names,
-			[
-				'engine' => 'openssl'
-			]
 		);
 		return 0;
 	}

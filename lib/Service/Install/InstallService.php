@@ -20,6 +20,7 @@ use OCA\Libresign\Handler\CertificateEngine\AEngineHandler;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Handler\CertificateEngine\CfsslHandler;
 use OCA\Libresign\Handler\CertificateEngine\IEngineHandler;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Vendor\LibreSign\WhatOSAmI\OperatingSystem;
 use OCP\Files\AppData\IAppDataFactory;
 use OCP\Files\IAppData;
@@ -75,6 +76,7 @@ class InstallService {
 		private LoggerInterface $logger,
 		private SignSetupService $signSetupService,
 		protected IAppDataFactory $appDataFactory,
+		private CaIdentifierService $caIdentifierService,
 	) {
 		$this->cache = $cacheFactory->createDistributed('libresign-setup');
 		$this->appData = $appDataFactory->get('libresign');
@@ -599,29 +601,17 @@ class InstallService {
 			return;
 		}
 		$folder = $this->getFolder($this->resource);
-		$downloads = [
-			[
-				'file' => 'cfssl_' . self::CFSSL_VERSION . '_linux_' . $architecture,
-				'destination' => 'cfssl',
-			],
-			[
-				'file' => 'cfssljson_' . self::CFSSL_VERSION . '_linux_' . $architecture,
-				'destination' => 'cfssljson',
-			],
-		];
+		$file = 'cfssl_' . self::CFSSL_VERSION . '_linux_' . $architecture;
 		$baseUrl = 'https://github.com/cloudflare/cfssl/releases/download/v' . self::CFSSL_VERSION . '/';
 		$checksumUrl = 'https://github.com/cloudflare/cfssl/releases/download/v' . self::CFSSL_VERSION . '/cfssl_' . self::CFSSL_VERSION . '_checksums.txt';
-		foreach ($downloads as $download) {
-			$hash = $this->getHash($download['file'], $checksumUrl);
+		$hash = $this->getHash($file, $checksumUrl);
 
-			$file = $folder->newFile($download['destination']);
-			$fullPath = $this->getInternalPathOfFile($file);
+		$fullPath = $this->getInternalPathOfFile($folder->newFile('cfssl'));
 
-			$dependencyName = $download['destination'] . ' ' . $architecture;
-			$this->download($baseUrl . $download['file'], $dependencyName, $fullPath, $hash, 'sha256');
+		$dependencyName = 'cfssl ' . $architecture;
+		$this->download($baseUrl . $file, $dependencyName, $fullPath, $hash, 'sha256');
 
-			chmod($fullPath, 0700);
-		}
+		chmod($fullPath, 0700);
 		$cfsslBinPath = $this->getInternalPathOfFolder($folder) . '/cfssl';
 		$this->appConfig->setValueString(Application::APP_ID, 'cfssl_bin', $cfsslBinPath);
 		$this->writeAppSignature();
@@ -721,19 +711,49 @@ class InstallService {
 		return $matches['hash'];
 	}
 
+	private function populateNamesWithInstanceId(array $names, string $engineName): array {
+		$caId = $this->caIdentifierService->generateCaId($engineName);
+
+		if (empty($names['OU'])) {
+			$names['OU']['value'] = [$caId];
+			return $names;
+		}
+
+		if (!isset($names['OU']['value'])) {
+			$names['OU']['value'] = [$caId];
+			return $names;
+		}
+
+		if (!is_array($names['OU']['value'])) {
+			$names['OU']['value'] = [$names['OU']['value']];
+		}
+
+		$names['OU']['value'] = array_filter(
+			$names['OU']['value'],
+			fn ($value) => !str_starts_with($value, 'libresign-ca-id:')
+		);
+
+		$names['OU']['value'][] = $caId;
+
+		return $names;
+	}
+
 	/**
 	 * @todo Use an custom array for engine options
 	 */
 	public function generate(
 		string $commonName,
+		string $engineName = '',
 		array $names = [],
 		array $properties = [],
 	): void {
+		$names = $this->populateNamesWithInstanceId($names, $engineName);
 		$rootCert = [
 			'commonName' => $commonName,
 			'names' => $names
 		];
-		$engine = $this->certificateEngineFactory->getEngine($properties['engine'] ?? '', $rootCert);
+		$engine = $this->certificateEngineFactory->getEngine($engineName, $rootCert);
+
 		if ($engine instanceof CfsslHandler) {
 			/** @var CfsslHandler $engine */
 			$engine->setCfsslUri($properties['cfsslUri']);
@@ -742,16 +762,14 @@ class InstallService {
 		$engine->setConfigPath($properties['configPath'] ?? '');
 
 		/** @var IEngineHandler $engine */
-		$privateKey = $engine->generateRootCert(
+		$engine->generateRootCert(
 			$commonName,
 			$names
 		);
 
 		$this->appConfig->setValueArray(Application::APP_ID, 'rootCert', $rootCert);
-		$this->appConfig->setValueString(Application::APP_ID, 'authkey', $privateKey);
 		/** @var AEngineHandler $engine */
 		if ($engine instanceof CfsslHandler) {
-			$this->appConfig->setValueString(Application::APP_ID, 'config_path', $engine->getConfigPath());
 			$this->appConfig->setValueString(Application::APP_ID, 'certificate_engine', 'cfssl');
 		} else {
 			$this->appConfig->setValueString(Application::APP_ID, 'certificate_engine', 'openssl');

@@ -4,14 +4,26 @@
 -->
 <template>
 	<div class="main-view">
-		<TopBar :sidebar-toggle="true" />
+		<TopBar
+			v-if="!isMobile"
+			:sidebar-toggle="true" />
 		<PdfEditor v-if="mounted && !signStore.errors.length && pdfBlob"
 			ref="pdfEditor"
 			width="100%"
 			height="100%"
-			:file="pdfBlob"
+			:files="[pdfBlob]"
+			:file-names="[pdfFileName]"
 			:read-only="true"
 			@pdf-editor:end-init="updateSigners" />
+		<div class="button-wrapper">
+			<NcButton
+			v-if="isMobile"
+			:wide="true"
+			variant="primary"
+			@click.prevent="toggleSidebar">
+			{{ t('libresign', 'Sign') }}
+			</NcButton>
+		</div>
 		<NcNoteCard v-for="(error, index) in signStore.errors"
 			:key="index"
 			:heading="error.title || ''"
@@ -23,6 +35,7 @@
 
 <script>
 import NcNoteCard from '@nextcloud/vue/components/NcNoteCard'
+import NcButton from '@nextcloud/vue/components/NcButton'
 
 import PdfEditor from '../../Components/PdfEditor/PdfEditor.vue'
 import TopBar from '../../Components/TopBar/TopBar.vue'
@@ -31,11 +44,14 @@ import { useFilesStore } from '../../store/files.js'
 import { useSidebarStore } from '../../store/sidebar.js'
 import { useSignStore } from '../../store/sign.js'
 import { useSignMethodsStore } from '../../store/signMethods.js'
+import { generateOcsUrl } from '@nextcloud/router'
+import axios from '@nextcloud/axios'
 
 export default {
 	name: 'SignPDF',
 	components: {
 		NcNoteCard,
+		NcButton,
 		TopBar,
 		PdfEditor,
 	},
@@ -44,7 +60,8 @@ export default {
 		const fileStore = useFilesStore()
 		const sidebarStore = useSidebarStore()
 		const signMethodsStore = useSignMethodsStore()
-		return { signStore, fileStore, sidebarStore, signMethodsStore }
+		const isMobile = window.innerWidth <= 512
+		return { signStore, fileStore, sidebarStore, signMethodsStore, isMobile }
 	},
 	data() {
 		return {
@@ -52,12 +69,28 @@ export default {
 			pdfBlob: null,
 		}
 	},
+	computed: {
+		pdfFileName() {
+			const doc = this.signStore.document
+			return `${doc.name}.${doc.metadata.extension}`
+		},
+	},
 	async created() {
 		if (this.$route.name === 'SignPDFExternal') {
 			await this.initSignExternal()
 		} else if (this.$route.name === 'SignPDF') {
 			await this.initSignInternal()
+		} else if (this.$route.name === 'IdDocsApprove') {
+			await this.initIdDocsApprove()
 		}
+
+		if (this.isMobile){
+			this.toggleSidebar();
+		}
+	},
+	beforeRouteLeave(to, from, next) {
+		this.sidebarStore.hideSidebar()
+		next()
 	},
 	methods: {
 		async initSignExternal() {
@@ -83,6 +116,15 @@ export default {
 				}
 			}
 		},
+		async initIdDocsApprove() {
+			const response = await axios.get(
+				generateOcsUrl('/apps/libresign/api/v1/file/validate/uuid/{uuid}', { uuid: this.$route.params.uuid })
+			)
+			this.signStore.setDocumentToSign(response.data.ocs.data)
+			this.fileStore.selectedNodeId = response.data.ocs.data.nodeId
+			await this.fetchPdfAsBlob(this.signStore.document.url)
+			this.mounted = true
+		},
 		async fetchPdfAsBlob(url) {
 			const response = await fetch(url)
 			const contentType = response.headers.get('Content-Type') || ''
@@ -101,20 +143,22 @@ export default {
 			this.pdfBlob = new File([blob], 'arquivo.pdf', { type: 'application/pdf' })
 		},
 		updateSigners(data) {
-			this.signStore.document.signers.forEach(signer => {
-				if (signer.visibleElements.length > 0) {
-					signer.visibleElements.forEach(element => {
-						const object = structuredClone(signer)
-						object.readOnly = true
-						element.coordinates.ury = Math.round(data.measurement[element.coordinates.page].height)
-							- element.coordinates.ury
-						object.element = element
-						this.$refs.pdfEditor.addSigner(object)
-					})
-				}
-			})
+			const currentSigner = this.signStore.document.signers.find(signer => signer.me)
+			if (currentSigner && currentSigner.visibleElements.length > 0) {
+				currentSigner.visibleElements.forEach(element => {
+					const object = structuredClone(currentSigner)
+					object.readOnly = true
+					element.coordinates.ury = Math.round(data.measurement[element.coordinates.page].height)
+						- element.coordinates.ury
+					object.element = element
+					this.$refs.pdfEditor.addSigner(object)
+				})
+			}
 			this.signStore.mounted = true
 		},
+		toggleSidebar() {
+			this.sidebarStore.toggleSidebar()
+		}
 	},
 }
 </script>
@@ -137,5 +181,8 @@ export default {
 		max-width: 600px;
 		margin: 0 auto;
 	}
+}
+.button-wrapper {
+	padding: 5px 16px;
 }
 </style>

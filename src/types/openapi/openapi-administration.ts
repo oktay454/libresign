@@ -44,6 +44,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/certificate/engine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set certificate engine
+         * @description Sets the certificate engine (openssl, cfssl, or none) and automatically configures identify_methods when needed
+         *     This endpoint requires admin access
+         */
+        post: operations["admin-set-certificate-engine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/certificate": {
         parameters: {
             query?: never;
@@ -297,6 +318,112 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/footer-template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get footer template
+         * @description Returns the current footer template if set, otherwise returns the default template.
+         *     This endpoint requires admin access
+         */
+        get: operations["admin-get-footer-template"];
+        put?: never;
+        /**
+         * Save footer template and render preview
+         * @description Saves the footer template and returns the rendered PDF preview.
+         *     This endpoint requires admin access
+         */
+        post: operations["admin-save-footer-template"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/signature-flow/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set signature flow configuration
+         * @description This endpoint requires admin access
+         */
+        post: operations["admin-set-signature-flow-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/admin/docmdp/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set DocMDP configuration
+         * @description This endpoint requires admin access
+         */
+        post: operations["admin-set-doc-mdp-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/crl/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List CRL entries with pagination and filters
+         * @description This endpoint requires admin access
+         */
+        get: operations["crl_api-list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ocs/v2.php/apps/libresign/api/{apiVersion}/crl/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a certificate by serial number
+         * @description This endpoint requires admin access
+         */
+        post: operations["crl_api-revoke"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ocs/v2.php/apps/libresign/api/{apiVersion}/setting/has-root-cert": {
         parameters: {
             query?: never;
@@ -416,7 +543,7 @@ export interface operations {
                         commonName: string;
                         names: {
                             [key: string]: {
-                                value: string;
+                                value: string | string[];
                             };
                         };
                     };
@@ -488,7 +615,7 @@ export interface operations {
                         commonName: string;
                         names: {
                             [key: string]: {
-                                value: string;
+                                value: string | string[];
                             };
                         };
                     };
@@ -519,6 +646,64 @@ export interface operations {
             };
             /** @description Account not found */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-set-certificate-engine": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The certificate engine to use (openssl, cfssl, or none) */
+                    engine: string;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                engine: string;
+                                identify_methods: {
+                                    [key: string]: Record<string, never>;
+                                }[];
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Invalid engine */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1328,6 +1513,399 @@ export interface operations {
                             data: {
                                 /** @enum {string} */
                                 status: "success";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-get-footer-template": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                template: string;
+                                isDefault: boolean;
+                                /** Format: int64 */
+                                preview_width: number;
+                                /** Format: int64 */
+                                preview_height: number;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-save-footer-template": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description The Twig template to save (empty to reset to default)
+                     * @default
+                     */
+                    template?: string;
+                    /**
+                     * Format: int64
+                     * @description Width of preview in points (default: 595 - A4 width)
+                     * @default 595
+                     */
+                    width?: number;
+                    /**
+                     * Format: int64
+                     * @description Height of preview in points (default: 50)
+                     * @default 50
+                     */
+                    height?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/pdf": string;
+                };
+            };
+            /** @description Bad request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                error: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-set-signature-flow-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Whether to force a signature flow for all documents */
+                    enabled: boolean;
+                    /** @description Signature flow mode: 'parallel' or 'ordered_numeric' (only used when enabled is true) */
+                    mode?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Configuration saved successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Invalid signature flow mode provided */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                error: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                error: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "admin-set-doc-mdp-config": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Enable or disable DocMDP certification */
+                    enabled: boolean;
+                    /**
+                     * Format: int64
+                     * @description Default DocMDP level (0-3): 0=none, 1=no changes, 2=form fill, 3=form fill + annotations
+                     */
+                    defaultLevel: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Configuration saved successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Invalid DocMDP level provided */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                error: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Internal server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                error: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "crl_api-list": {
+        parameters: {
+            query?: {
+                /** @description Page number (1-based) */
+                page?: number | null;
+                /** @description Number of items per page */
+                length?: number | null;
+                /** @description Filter by status (issued, revoked, expired) */
+                status?: string | null;
+                /** @description Filter by engine type */
+                engine?: string | null;
+                /** @description Filter by instance ID */
+                instanceId?: string | null;
+                /** @description Filter by generation */
+                generation?: number | null;
+                /** @description Filter by owner */
+                owner?: string | null;
+                /** @description Filter by serial number (partial match) */
+                serialNumber?: string | null;
+                /** @description Filter by who revoked the certificate */
+                revokedBy?: string | null;
+                /** @description Sort field (e.g., 'revoked_at', 'issued_at', 'serial_number') */
+                sortBy?: string | null;
+                /** @description Sort order (ASC or DESC) */
+                sortOrder?: string | null;
+            };
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CRL entries retrieved successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                data: {
+                                    [key: string]: Record<string, never>;
+                                };
+                                /** Format: int64 */
+                                total: number;
+                                /** Format: int64 */
+                                page: number;
+                                /** Format: int64 */
+                                length: number;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    "crl_api-revoke": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required to be true for the API request to pass */
+                "OCS-APIRequest": boolean;
+            };
+            path: {
+                apiVersion: "v1";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Certificate serial number to revoke */
+                    serialNumber: string;
+                    /**
+                     * Format: int64
+                     * @description Revocation reason code (0-10, see RFC 5280)
+                     */
+                    reasonCode?: number | null;
+                    /** @description Optional text describing the reason */
+                    reasonText?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Certificate revoked successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                success: boolean;
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Invalid parameters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                success: boolean;
+                                message: string;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Certificate not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ocs: {
+                            meta: components["schemas"]["OCSMeta"];
+                            data: {
+                                success: boolean;
+                                message: string;
                             };
                         };
                     };

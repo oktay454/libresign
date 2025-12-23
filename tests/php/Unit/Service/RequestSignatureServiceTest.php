@@ -11,16 +11,23 @@ use OCA\Libresign\Db\FileElementMapper;
 use OCA\Libresign\Db\FileMapper;
 use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequestMapper;
+use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Helper\ValidateHelper;
+use OCA\Libresign\Service\DocMdpConfigService;
 use OCA\Libresign\Service\FileElementService;
+use OCA\Libresign\Service\FileStatusService;
 use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\IdentifyMethodService;
 use OCA\Libresign\Service\PdfParserService;
 use OCA\Libresign\Service\RequestSignatureService;
+use OCA\Libresign\Service\SequentialSigningService;
+use OCA\Libresign\Service\SignRequestStatusService;
+use OCP\EventDispatcher\IEventDispatcher;
 use OCP\Files\IMimeTypeDetector;
 use OCP\Http\Client\IClient;
 use OCP\Http\Client\IClientService;
 use OCP\Http\Client\IResponse;
+use OCP\IAppConfig;
 use OCP\IL10N;
 use OCP\IUser;
 use OCP\IUserManager;
@@ -43,7 +50,14 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 	private PdfParserService&MockObject $pdfParserService;
 	private IMimeTypeDetector&MockObject $mimeTypeDetector;
 	private IClientService&MockObject $client;
+	private DocMdpHandler&MockObject $docMdpHandler;
 	private LoggerInterface&MockObject $loggerInterface;
+	private SequentialSigningService&MockObject $sequentialSigningService;
+	private IAppConfig&MockObject $appConfig;
+	private IEventDispatcher&MockObject $eventDispatcher;
+	private FileStatusService&MockObject $fileStatusService;
+	private SignRequestStatusService&MockObject $signRequestStatusService;
+	private DocMdpConfigService&MockObject $docMdpConfigService;
 
 	public function setUp(): void {
 		parent::setUp();
@@ -66,7 +80,14 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$this->pdfParserService = $this->createMock(PdfParserService::class);
 		$this->mimeTypeDetector = $this->createMock(IMimeTypeDetector::class);
 		$this->client = $this->createMock(IClientService::class);
+		$this->docMdpHandler = $this->createMock(DocMdpHandler::class);
 		$this->loggerInterface = $this->createMock(LoggerInterface::class);
+		$this->sequentialSigningService = $this->createMock(SequentialSigningService::class);
+		$this->appConfig = $this->createMock(IAppConfig::class);
+		$this->eventDispatcher = $this->createMock(IEventDispatcher::class);
+		$this->fileStatusService = $this->createMock(FileStatusService::class);
+		$this->signRequestStatusService = $this->createMock(SignRequestStatusService::class);
+		$this->docMdpConfigService = $this->createMock(DocMdpConfigService::class);
 	}
 
 	private function getService(): RequestSignatureService {
@@ -84,7 +105,14 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			$this->mimeTypeDetector,
 			$this->validateHelper,
 			$this->client,
-			$this->loggerInterface
+			$this->docMdpHandler,
+			$this->loggerInterface,
+			$this->sequentialSigningService,
+			$this->appConfig,
+			$this->eventDispatcher,
+			$this->fileStatusService,
+			$this->signRequestStatusService,
+			$this->docMdpConfigService,
 		);
 	}
 
@@ -123,7 +151,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$this->expectExceptionMessage('Empty users list');
 
 		$this->getService()->validateNewRequestToFile([
-			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/small_valid.pdf'))],
+			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/pdfs/small_valid.pdf'))],
 			'name' => 'test',
 			'userManager' => $this->user
 		]);
@@ -133,7 +161,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$this->expectExceptionMessage('User list needs to be an array');
 
 		$this->getService()->validateNewRequestToFile([
-			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/small_valid.pdf'))],
+			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/pdfs/small_valid.pdf'))],
 			'name' => 'test',
 			'users' => 'asdfg',
 			'userManager' => $this->user
@@ -144,7 +172,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 		$this->expectExceptionMessage('Empty users list');
 
 		$this->getService()->validateNewRequestToFile([
-			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/small_valid.pdf'))],
+			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/pdfs/small_valid.pdf'))],
 			'name' => 'test',
 			'users' => null,
 			'userManager' => $this->user
@@ -153,7 +181,7 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 
 	public function testValidateSuccess():void {
 		$actual = $this->getService()->validateNewRequestToFile([
-			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/small_valid.pdf'))],
+			'file' => ['base64' => base64_encode(file_get_contents(__DIR__ . '/../../fixtures/pdfs/small_valid.pdf'))],
 			'name' => 'test',
 			'users' => [
 				['identify' => ['email' => 'jhondoe@test.coop']]
@@ -232,5 +260,77 @@ final class RequestSignatureServiceTest extends \OCA\Libresign\Tests\Unit\TestCa
 			[[['uid' => 1]]],
 			[[['uid' => 1], ['uid' => 1]]],
 		];
+	}
+
+	/**
+	 * Test that parallel flow correctly sets ABLE_TO_SIGN status for all signers
+	 * even when frontend sends status 0 (DRAFT) for individual signers,
+	 * as long as file status is ABLE_TO_SIGN (1)
+	 */
+	public function testParallelFlowIgnoresSignerDraftStatusWhenFileIsAbleToSign(): void {
+		$sequentialSigningService = $this->createMock(SequentialSigningService::class);
+		$sequentialSigningService
+			->method('isOrderedNumericFlow')
+			->willReturn(false); // Parallel flow
+
+		$fileStatusService = $this->createMock(FileStatusService::class);
+		$statusService = new SignRequestStatusService($sequentialSigningService, $fileStatusService);
+
+		// File status is ABLE_TO_SIGN (1)
+		$fileStatus = \OCA\Libresign\Db\File::STATUS_ABLE_TO_SIGN;
+
+		// Signer status is DRAFT (0) - as sent by frontend
+		$signerStatus = \OCA\Libresign\Enum\SignRequestStatus::DRAFT->value;
+
+		$result = $statusService->determineInitialStatus(
+			1, // signingOrder
+			123, // fileId
+			$fileStatus,
+			$signerStatus,
+			null, // currentStatus
+		);
+
+		// In parallel flow with ABLE_TO_SIGN file status, signer should be ABLE_TO_SIGN
+		$this->assertEquals(
+			\OCA\Libresign\Enum\SignRequestStatus::ABLE_TO_SIGN,
+			$result,
+			'Parallel flow should set all signers to ABLE_TO_SIGN when file status is ABLE_TO_SIGN'
+		);
+	}
+
+	/**
+	 * Test that ordered flow respects signing order when file is ABLE_TO_SIGN
+	 */
+	public function testOrderedFlowRespectsSigningOrderWhenFileIsAbleToSign(): void {
+		$sequentialSigningService = $this->createMock(SequentialSigningService::class);
+		$sequentialSigningService
+			->method('isOrderedNumericFlow')
+			->willReturn(true); // Ordered flow
+
+		$fileStatusService = $this->createMock(FileStatusService::class);
+		$statusService = new SignRequestStatusService($sequentialSigningService, $fileStatusService);
+
+		$fileStatus = \OCA\Libresign\Db\File::STATUS_ABLE_TO_SIGN;
+		$signerStatus = \OCA\Libresign\Enum\SignRequestStatus::DRAFT->value;
+
+		// First signer (order 1) should be ABLE_TO_SIGN
+		$result1 = $statusService->determineInitialStatus(
+			1, 123, $fileStatus, $signerStatus, null
+		);
+		$this->assertEquals(
+			\OCA\Libresign\Enum\SignRequestStatus::ABLE_TO_SIGN,
+			$result1,
+			'First signer in ordered flow should be ABLE_TO_SIGN'
+		);
+
+		// Second signer (order 2) should remain DRAFT
+		$result2 = $statusService->determineInitialStatus(
+			2, 123, $fileStatus, $signerStatus, null
+		);
+		$this->assertEquals(
+			\OCA\Libresign\Enum\SignRequestStatus::DRAFT,
+			$result2,
+			'Second signer in ordered flow should remain DRAFT until first signs'
+		);
 	}
 }

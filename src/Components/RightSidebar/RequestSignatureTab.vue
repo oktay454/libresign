@@ -4,14 +4,54 @@
 -->
 <template>
 	<div id="request-signature-tab">
+		<NcNoteCard v-if="showDocMdpWarning" type="warning">
+			{{ t('libresign', 'This document has been certified with no changes allowed. You cannot add more signers to this document.') }}
+		</NcNoteCard>
+		<NcNoteCard v-if="hasSignersWithDisabledMethods" type="warning">
+			{{ t('libresign', 'Some signers use identification methods that have been disabled. Please remove or update them before requesting signatures.') }}
+		</NcNoteCard>
 		<NcButton v-if="filesStore.canAddSigner()"
 			:variant="hasSigners ? 'secondary' : 'primary'"
 			@click="addSigner">
 			{{ t('libresign', 'Add signer') }}
 		</NcButton>
-		<Signers event="libresign:edit-signer">
-			<template #actions="{signer}">
-				<NcActionButton v-if="filesStore.canSave() && !signer.signed"
+		<NcCheckboxRadioSwitch v-if="showPreserveOrder"
+			v-model="preserveOrder"
+			type="switch"
+			@update:checked="onPreserveOrderChange">
+			{{ t('libresign', 'Preserve signing order') }}
+		</NcCheckboxRadioSwitch>
+		<NcButton v-if="showViewOrderButton"
+			type="tertiary"
+			@click="showOrderDiagram = true">
+			<template #icon>
+				<ChartGantt :size="20" />
+			</template>
+			{{ t('libresign', 'View signing order') }}
+		</NcButton>
+		<Signers event="libresign:edit-signer"
+			@signing-order-changed="debouncedSave">
+			<template #actions="{signer, closeActions}">
+				<NcActionInput v-if="canEditSigningOrder(signer)"
+					:label="t('libresign', 'Signing order')"
+					type="number"
+					:value="signer.signingOrder || 1"
+					@update:value="updateSigningOrder(signer, $event)"
+					@submit="confirmSigningOrder(signer); closeActions()"
+					@blur="confirmSigningOrder(signer)">
+					<template #icon>
+						<OrderNumericAscending :size="20" />
+					</template>
+				</NcActionInput>
+				<NcActionButton v-if="canCustomizeMessage(signer)"
+					:close-after-click="true"
+					@click="customizeMessage(signer); closeActions()">
+					<template #icon>
+						<MessageText :size="20" />
+					</template>
+					{{ t('libresign', 'Customize message') }}
+				</NcActionButton>
+				<NcActionButton v-if="canDelete(signer)"
 					aria-label="Delete"
 					:close-after-click="true"
 					@click="filesStore.deleteSigner(signer)">
@@ -20,57 +60,99 @@
 					</template>
 					{{ t('libresign', 'Delete') }}
 				</NcActionButton>
-				<NcActionButton v-if="filesStore.canRequestSign && !signer.signed && signer.signRequestId && !signer.me"
-					icon="icon-comment"
+				<NcActionButton v-if="canRequestSignature(signer)"
+					:close-after-click="true"
+					@click="requestSignatureForSigner(signer)">
+					<template #icon>
+						<Send :size="20" />
+					</template>
+					{{ t('libresign', 'Request signature') }}
+				</NcActionButton>
+				<NcActionButton v-if="canSendReminder(signer)"
 					:close-after-click="true"
 					@click="sendNotify(signer)">
+					<template #icon>
+						<Bell :size="20" />
+					</template>
 					{{ t('libresign', 'Send reminder') }}
 				</NcActionButton>
 			</template>
 		</Signers>
 		<div class="action-buttons">
-			<NcButton v-if="filesStore.canSave()"
-				:variant="filesStore.canSign() ? 'secondary' : 'primary'"
-				:disabled="hasLoading"
-				@click="save()">
-				<template #icon>
-					<NcLoadingIcon v-if="hasLoading" :size="20" />
-				</template>
-				{{ labelOfSaveButton }}
-			</NcButton>
-			<NcButton v-if="filesStore.canSign()"
-				variant="primary"
-				:disabled="hasLoading"
-				@click="sign()">
-				<template #icon>
-					<NcLoadingIcon v-if="hasLoading" :size="20" />
-				</template>
-				{{ t('libresign', 'Sign') }}
-			</NcButton>
-			<NcButton v-if="filesStore.canValidate()"
-				variant="primary"
-				@click="validationFile()">
-				{{ t('libresign', 'Validate') }}
-			</NcButton>
-			<NcButton @click="openFile()">
-				{{ t('libresign', 'Open file') }}
-			</NcButton>
+			<div v-if="showSaveButton || showRequestButton" class="button-group">
+				<NcButton v-if="showSaveButton"
+					wide
+					variant="secondary"
+					:disabled="hasLoading"
+					@click="save()">
+					<template #icon>
+						<NcLoadingIcon v-if="hasLoading" :size="20" />
+						<Pencil v-else-if="isSignElementsAvailable()" :size="20" />
+					</template>
+					{{ isSignElementsAvailable() ? t('libresign', 'Setup signature positions') : t('libresign', 'Save') }}
+				</NcButton>
+				<NcButton v-if="showRequestButton"
+					wide
+					:variant="filesStore.canSign() ? 'secondary' : 'primary'"
+					:disabled="hasLoading"
+					@click="request()">
+					<template #icon>
+						<NcLoadingIcon v-if="hasLoading" :size="20" />
+						<Send v-else :size="20" />
+					</template>
+					{{ t('libresign', 'Request signatures') }}
+				</NcButton>
+			</div>
+			<div v-if="filesStore.canSign()" class="button-group">
+				<NcButton wide
+					variant="primary"
+					:disabled="hasLoading"
+					@click="sign()">
+					<template #icon>
+						<NcLoadingIcon v-if="hasLoading" :size="20" />
+						<Draw v-else :size="20" />
+					</template>
+					{{ t('libresign', 'Sign document') }}
+				</NcButton>
+			</div>
+			<div class="button-group">
+				<NcButton v-if="filesStore.canValidate()"
+					wide
+					variant="secondary"
+					@click="validationFile()">
+					<template #icon>
+						<Information :size="20" />
+					</template>
+					{{ t('libresign', 'Validation info') }}
+				</NcButton>
+				<NcButton wide
+					variant="secondary"
+					@click="openFile()">
+					<template #icon>
+						<FileDocument :size="20" />
+					</template>
+					{{ t('libresign', 'Open file') }}
+				</NcButton>
+			</div>
 		</div>
 		<VisibleElements />
 		<NcModal v-if="modalSrc"
 			size="full"
 			:name="fileName"
 			:close-button-contained="false"
+			:close-button-outside="true"
 			@close="closeModal()">
 			<iframe :src="modalSrc" class="iframe" />
 		</NcModal>
 		<NcDialog v-if="filesStore.identifyingSigner"
 			id="request-signature-identify-signer"
 			:size="size"
-			:name="t('libresign', 'Add new signer')"
+			:name="modalTitle"
 			@closing="filesStore.disableIdentifySigner()">
-			<NcAppSidebar :name="t('libresign', 'Add new signer')">
-				<NcAppSidebarTab v-for="method in enabledMethods()"
+			<NcAppSidebar :name="modalTitle"
+				:active="activeTab"
+				@update:active="onTabChange">
+				<NcAppSidebarTab v-for="method in enabledMethods"
 					:id="`tab-${method.name}`"
 					:key="method.name"
 					:name="method.friendly_name">
@@ -80,21 +162,85 @@
 					</template>
 					<IdentifySigner :signer-to-edit="signerToEdit"
 						:placeholder="method.friendly_name"
-						:method="method.name" />
+						:method="method.name"
+						:methods="methods"
+						:disabled="isSignerMethodDisabled" />
 				</NcAppSidebarTab>
 			</NcAppSidebar>
+		</NcDialog>
+		<NcDialog v-if="showConfirmRequest"
+			:name="t('libresign', 'Confirm')"
+			:message="t('libresign', 'Send signature request?')"
+			@closing="showConfirmRequest = false">
+			<template #actions>
+				<NcButton @click="showConfirmRequest = false">
+					{{ t('libresign', 'Cancel') }}
+				</NcButton>
+				<NcButton variant="primary"
+					:disabled="hasLoading"
+					@click="confirmRequest">
+					<template #icon>
+						<NcLoadingIcon v-if="hasLoading" :size="20" />
+						<Send v-else :size="20" />
+					</template>
+					{{ t('libresign', 'Send') }}
+				</NcButton>
+			</template>
+		</NcDialog>
+		<NcDialog v-if="showConfirmRequestSigner"
+			:name="t('libresign', 'Confirm')"
+			:message="t('libresign', 'Send signature request?')"
+			@closing="showConfirmRequestSigner = false; selectedSigner = null">
+			<template #actions>
+				<NcButton @click="showConfirmRequestSigner = false; selectedSigner = null">
+					{{ t('libresign', 'Cancel') }}
+				</NcButton>
+				<NcButton variant="primary"
+					:disabled="hasLoading"
+					@click="confirmRequestSigner">
+					<template #icon>
+						<NcLoadingIcon v-if="hasLoading" :size="20" />
+						<Send v-else :size="20" />
+					</template>
+					{{ t('libresign', 'Send') }}
+				</NcButton>
+			</template>
+		</NcDialog>
+		<NcDialog v-if="showOrderDiagram"
+			:name="t('libresign', 'Signing order diagram')"
+			size="large"
+			@closing="showOrderDiagram = false">
+			<SigningOrderDiagram :signers="filesStore.getFile()?.signers || []"
+				:sender-name="currentUserDisplayName" />
+			<template #actions>
+				<NcButton @click="showOrderDiagram = false">
+					{{ t('libresign', 'Close') }}
+				</NcButton>
+			</template>
 		</NcDialog>
 	</div>
 </template>
 <script>
 
+import debounce from 'debounce'
+
 import svgAccount from '@mdi/svg/svg/account.svg?raw'
 import svgEmail from '@mdi/svg/svg/email.svg?raw'
+import svgInfo from '@mdi/svg/svg/information-outline.svg?raw'
 import svgSms from '@mdi/svg/svg/message-processing.svg?raw'
 import svgWhatsapp from '@mdi/svg/svg/whatsapp.svg?raw'
 import svgXmpp from '@mdi/svg/svg/xmpp.svg?raw'
 
+import Bell from 'vue-material-design-icons/Bell.vue'
+import ChartGantt from 'vue-material-design-icons/ChartGantt.vue'
 import Delete from 'vue-material-design-icons/Delete.vue'
+import Draw from 'vue-material-design-icons/Draw.vue'
+import FileDocument from 'vue-material-design-icons/FileDocument.vue'
+import Information from 'vue-material-design-icons/Information.vue'
+import MessageText from 'vue-material-design-icons/MessageText.vue'
+import OrderNumericAscending from 'vue-material-design-icons/OrderNumericAscending.vue'
+import Pencil from 'vue-material-design-icons/Pencil.vue'
+import Send from 'vue-material-design-icons/Send.vue'
 
 import axios from '@nextcloud/axios'
 import { getCapabilities } from '@nextcloud/capabilities'
@@ -104,24 +250,31 @@ import { loadState } from '@nextcloud/initial-state'
 import { generateOcsUrl } from '@nextcloud/router'
 
 import NcActionButton from '@nextcloud/vue/components/NcActionButton'
+import NcActionInput from '@nextcloud/vue/components/NcActionInput'
+import NcActions from '@nextcloud/vue/components/NcActions'
 import NcAppSidebar from '@nextcloud/vue/components/NcAppSidebar'
 import NcAppSidebarTab from '@nextcloud/vue/components/NcAppSidebarTab'
 import NcButton from '@nextcloud/vue/components/NcButton'
+import NcCheckboxRadioSwitch from '@nextcloud/vue/components/NcCheckboxRadioSwitch'
 import NcDialog from '@nextcloud/vue/components/NcDialog'
 import NcIconSvgWrapper from '@nextcloud/vue/components/NcIconSvgWrapper'
 import NcLoadingIcon from '@nextcloud/vue/components/NcLoadingIcon'
 import NcModal from '@nextcloud/vue/components/NcModal'
+import NcNoteCard from '@nextcloud/vue/components/NcNoteCard'
 
 import IdentifySigner from '../Request/IdentifySigner.vue'
-import VisibleElements from '../Request/VisibleElements.vue'
 import Signers from '../Signers/Signers.vue'
+import SigningOrderDiagram from '../SigningOrder/SigningOrderDiagram.vue'
+import VisibleElements from '../Request/VisibleElements.vue'
 
 import svgSignal from '../../../img/logo-signal-app.svg?raw'
 import svgTelegram from '../../../img/logo-telegram-app.svg?raw'
+import { SIGN_STATUS } from '../../domains/sign/enum.js'
 import router from '../../router/router.js'
 import { useFilesStore } from '../../store/files.js'
 import { useSidebarStore } from '../../store/sidebar.js'
 import { useSignStore } from '../../store/sign.js'
+import { useUserConfigStore } from '../../store/userconfig.js'
 
 const iconMap = {
 	svgAccount,
@@ -133,20 +286,37 @@ const iconMap = {
 	svgXmpp,
 }
 
+import signingOrderMixin from '../../mixins/signingOrderMixin.js'
+
 export default {
 	name: 'RequestSignatureTab',
+	mixins: [signingOrderMixin],
 	components: {
+		Bell,
+		ChartGantt,
+		Delete,
+		Draw,
+		FileDocument,
+		IdentifySigner,
+		Information,
+		MessageText,
 		NcActionButton,
+		NcActionInput,
+		NcActions,
 		NcAppSidebar,
 		NcAppSidebarTab,
 		NcButton,
+		NcCheckboxRadioSwitch,
+		NcDialog,
 		NcIconSvgWrapper,
 		NcLoadingIcon,
 		NcModal,
-		NcDialog,
-		Delete,
+		NcNoteCard,
+		OrderNumericAscending,
+		Pencil,
+		Send,
 		Signers,
-		IdentifySigner,
+		SigningOrderDiagram,
 		VisibleElements,
 	},
 	props: {
@@ -159,7 +329,8 @@ export default {
 		const filesStore = useFilesStore()
 		const signStore = useSignStore()
 		const sidebarStore = useSidebarStore()
-		return { filesStore, signStore, sidebarStore }
+		const userConfigStore = useUserConfigStore()
+		return { filesStore, signStore, sidebarStore, userConfigStore }
 	},
 	data() {
 		return {
@@ -169,21 +340,181 @@ export default {
 			document: {},
 			hasInfo: false,
 			methods: [],
+			showConfirmRequest: false,
+			showConfirmRequestSigner: false,
+			selectedSigner: null,
+			activeTab: '',
+			preserveOrder: false,
+			showOrderDiagram: false,
+			infoIcon: svgInfo,
+			adminSignatureFlow: '',
+			lastSyncedFileId: null,
 		}
 	},
 	computed: {
-		labelOfSaveButton() {
+		signatureFlow() {
+			const file = this.filesStore.getFile()
+			let flow = file?.signatureFlow
 
-			if (this.filesStore.canSign()) {
-				return t('libresign', 'Edit visible signatures')
+			if (typeof flow === 'number') {
+				const flowMap = { 0: 'none', 1: 'parallel', 2: 'ordered_numeric' }
+				flow = flowMap[flow]
 			}
-			if (this.isSignElementsAvailable()) {
-				return t('libresign', 'Next')
+
+			if (flow && flow !== 'none') {
+				return flow
 			}
-			return t('libresign', 'Request')
+			if (this.adminSignatureFlow && this.adminSignatureFlow !== 'none') {
+				return this.adminSignatureFlow
+			}
+			return 'parallel'
+		},
+		isAdminFlowForced() {
+			return this.adminSignatureFlow && this.adminSignatureFlow !== 'none'
+		},
+		isOrderedNumeric() {
+			return this.signatureFlow === 'ordered_numeric'
+		},
+		showSigningOrderOptions() {
+			return this.hasSigners && this.filesStore.canSave() && !this.isAdminFlowForced
+		},
+		showPreserveOrder() {
+			return this.totalSigners > 1 && this.filesStore.canSave() && !this.isAdminFlowForced
+		},
+		showViewOrderButton() {
+			return this.isOrderedNumeric && this.totalSigners > 1 && this.hasSigners
+		},
+		shouldShowOrderedOptions() {
+			return this.isOrderedNumeric && this.totalSigners > 1
+		},
+		currentUserDisplayName() {
+			return OC.getCurrentUser()?.displayName || ''
+		},
+		showDocMdpWarning() {
+			return this.filesStore.isDocMdpNoChangesAllowed() && !this.filesStore.canAddSigner()
+		},
+		canEditSigningOrder() {
+			return (signer) => {
+				const minSigners = this.isAdminFlowForced ? 1 : 2
+
+				return this.isOrderedNumeric
+					&& this.totalSigners >= minSigners
+					&& this.filesStore.canSave()
+					&& !signer.signed
+			}
+		},
+		canDelete() {
+			return (signer) => {
+				return this.filesStore.canSave() && !signer.signed
+			}
+		},
+		canCustomizeMessage() {
+			return (signer) => {
+				if (signer.signed || !signer.signRequestId || signer.me) {
+					return false
+				}
+
+				const method = signer.identifyMethods?.[0]?.method
+				if (method === 'account' && !signer.acceptsEmailNotifications) {
+					return false
+				}
+
+				if (!this.canSignerActInOrder(signer)) {
+					return false
+				}
+
+				return !!method
+			}
+		},
+		canRequestSignature() {
+			return (signer) => {
+				if (!this.filesStore.canRequestSign
+					|| signer.signed
+					|| !signer.signRequestId
+					|| signer.me
+					|| signer.status !== 0) {
+					return false
+				}
+
+				return this.canSignerActInOrder(signer)
+			}
+		},
+		canSendReminder() {
+			return (signer) => {
+				if (!this.filesStore.canRequestSign
+					|| signer.signed
+					|| !signer.signRequestId
+					|| signer.me
+					|| signer.status !== 1) {
+					return false
+				}
+
+				return this.canSignerActInOrder(signer)
+			}
+		},
+		hasSignersWithDisabledMethods() {
+			const file = this.filesStore.getFile()
+			if (!file?.signers) {
+				return false
+			}
+
+			return file.signers.some(signer => {
+				if (signer.signed) {
+					return false
+				}
+				const method = signer.identifyMethods?.[0]?.method
+				if (!method) {
+					return false
+				}
+				const methodConfig = this.methods.find(m => m.name === method)
+				return !methodConfig?.enabled
+			})
+		},
+		showSaveButton() {
+			if (!this.filesStore.canSave()) {
+				return false
+			}
+
+			if (!this.isSignElementsAvailable()) {
+				return false
+			}
+
+			const file = this.filesStore.getFile()
+
+			if (file.status === SIGN_STATUS.PARTIAL_SIGNED || file.status === SIGN_STATUS.SIGNED) {
+				return false
+			}
+
+			if (this.hasSignersWithDisabledMethods) {
+				return false
+			}
+
+			return true
+		},
+		showRequestButton() {
+			if (!this.filesStore.canSave()) {
+				return false
+			}
+			if (this.hasSignersWithDisabledMethods) {
+				return false
+			}
+			return this.hasDraftSigners
+		},
+		hasDraftSigners() {
+			const file = this.filesStore.getFile()
+			if (!file?.signers) {
+				return false
+			}
+
+			return this.isOrderedNumeric
+				? this.hasSequentialDraftSigners(file)
+				: this.hasAnyDraftSigner(file)
 		},
 		hasSigners() {
 			return this.filesStore.hasSigners(this.filesStore.getFile())
+		},
+		totalSigners() {
+			return this.filesStore.getFile()?.signers?.length || 0
 		},
 		fileName() {
 			return this.filesStore.getFile()?.name ?? ''
@@ -191,15 +522,64 @@ export default {
 		size() {
 			return window.matchMedia('(max-width: 512px)').matches ? 'full' : 'normal'
 		},
+		modalTitle() {
+			if (Object.keys(this.signerToEdit).length > 0) {
+				return this.t('libresign', 'Edit signer')
+			}
+			return this.t('libresign', 'Add new signer')
+		},
+		enabledMethods() {
+			if (Object.keys(this.signerToEdit).length > 0 && this.signerToEdit.identifyMethods?.length) {
+				const signerMethod = this.signerToEdit.identifyMethods[0].method
+				const signerMethodConfig = this.methods.find(m => m.name === signerMethod)
+
+				if (signerMethodConfig) {
+					return [signerMethodConfig]
+				}
+			}
+
+			return this.methods.filter(method => method.enabled)
+		},
+		isSignerMethodDisabled() {
+			if (Object.keys(this.signerToEdit).length > 0 && this.signerToEdit.identifyMethods?.length) {
+				const signerMethod = this.signerToEdit.identifyMethods[0].method
+				const methodConfig = this.methods.find(m => m.name === signerMethod)
+				return !methodConfig?.enabled
+			}
+			return false
+		},
+		disabledMethodName() {
+			if (this.isSignerMethodDisabled && this.signerToEdit.identifyMethods?.length) {
+				const signerMethod = this.signerToEdit.identifyMethods[0].method
+				const methodConfig = this.methods.find(m => m.name === signerMethod)
+				return methodConfig?.friendly_name || signerMethod
+			}
+			return ''
+		},
 	},
 	watch: {
 		signers(signers) {
 			this.init(signers)
 		},
+		'filesStore.selectedNodeId': {
+			handler(newFileId, oldFileId) {
+				if (newFileId && newFileId !== this.lastSyncedFileId) {
+					this.syncPreserveOrderWithFile()
+					this.lastSyncedFileId = newFileId
+				}
+			},
+			immediate: true,
+		},
 	},
 	async mounted() {
 		subscribe('libresign:edit-signer', this.editSigner)
 		this.filesStore.disableIdentifySigner()
+
+		this.activeTab = this.userConfigStore.signer_identify_tab || ''
+
+		this.adminSignatureFlow = loadState('libresign', 'signature_flow', 'none')
+
+		this.syncPreserveOrderWithFile()
 	},
 	beforeUnmount() {
 		unsubscribe('libresign:edit-signer')
@@ -207,13 +587,124 @@ export default {
 	created() {
 		this.$set(this, 'methods', loadState('libresign', 'identify_methods'))
 		this.$set(this, 'document', loadState('libresign', 'file_info', {}))
+
+		this.debouncedSave = debounce(async () => {
+			try {
+				const file = this.filesStore.getFile()
+				await this.filesStore.saveWithVisibleElements({
+					visibleElements: [],
+					signatureFlow: file?.signatureFlow,
+				})
+			} catch (error) {
+				if (error.response?.data?.ocs?.data?.message) {
+					showError(error.response.data.ocs.data.message)
+				} else if (error.response?.data?.ocs?.data?.errors) {
+					error.response.data.ocs.data.errors.forEach(error => showError(error.message))
+				}
+			}
+		}, 1000)
+
+		this.debouncedTabChange = debounce((tabId) => {
+			this.userConfigStore.update('signer_identify_tab', tabId)
+		}, 500)
 	},
 	methods: {
+		onPreserveOrderChange(value) {
+			this.preserveOrder = value
+			const file = this.filesStore.getFile()
+
+			if (value) {
+				if (file?.signers) {
+					file.signers.forEach((signer, index) => {
+						if (!signer.signingOrder) {
+							this.$set(signer, 'signingOrder', index + 1)
+						}
+					})
+				}
+				if (file) {
+					this.$set(file, 'signatureFlow', 'ordered_numeric')
+				}
+			} else {
+				if (!this.isAdminFlowForced) {
+					if (file?.signers) {
+						file.signers.forEach(signer => {
+							if (!signer.signed) {
+								this.$set(signer, 'signingOrder', 1)
+							}
+						})
+					}
+					if (file) {
+						this.$set(file, 'signatureFlow', 'parallel')
+					}
+				}
+			}
+
+			this.debouncedSave()
+		},
+
+		syncPreserveOrderWithFile() {
+			const file = this.filesStore.getFile()
+			if (!file) {
+				this.preserveOrder = false
+				return
+			}
+
+			const flow = file.signatureFlow
+
+			this.lastSyncedFileId = this.filesStore.selectedNodeId
+
+			if ((flow === 'ordered_numeric' || flow === 2) && !this.isAdminFlowForced) {
+				this.preserveOrder = true
+			} else {
+				this.preserveOrder = false
+			}
+		},
 		getSvgIcon(name) {
 			return iconMap[`svg${name.charAt(0).toUpperCase() + name.slice(1)}`] || iconMap.svgAccount
 		},
-		enabledMethods() {
-			return this.methods.filter(method => method.enabled)
+		canSignerActInOrder(signer) {
+			const method = signer.identifyMethods?.[0]?.method
+			if (method) {
+				const methodConfig = this.methods.find(m => m.name === method)
+				if (!methodConfig?.enabled) {
+					return false
+				}
+			}
+
+			if (!this.isOrderedNumeric) {
+				return true
+			}
+
+			const file = this.filesStore.getFile()
+			const signerOrder = signer.signingOrder || 1
+
+			const hasPendingLowerOrder = file.signers.some(s => {
+				const otherOrder = s.signingOrder || 1
+				return otherOrder < signerOrder && !s.signed
+			})
+
+			return !hasPendingLowerOrder
+		},
+		hasAnyDraftSigner(file) {
+			return file.signers.some(signer => signer.status === 0)
+		},
+		hasSequentialDraftSigners(file) {
+			const signersNotSigned = file.signers.filter(s => !s.signed)
+			if (signersNotSigned.length === 0) {
+				return false
+			}
+
+			const currentOrder = this.getCurrentSigningOrder(signersNotSigned)
+			return this.hasOrderDraftSigners(file, currentOrder)
+		},
+		getCurrentSigningOrder(signersNotSigned) {
+			return Math.min(...signersNotSigned.map(s => s.signingOrder || 1))
+		},
+		hasOrderDraftSigners(file, order) {
+			return file.signers.some(signer => {
+				const signerOrder = signer.signingOrder || 1
+				return signerOrder === order && signer.status === 0
+			})
 		},
 		isSignElementsAvailable() {
 			return getCapabilities()?.libresign?.config?.['sign-elements']?.['is-available'] === true
@@ -233,11 +724,91 @@ export default {
 		},
 		addSigner() {
 			this.signerToEdit = {}
+			this.activeTab = this.userConfigStore.signer_identify_tab || ''
 			this.filesStore.enableIdentifySigner()
 		},
 		editSigner(signer) {
 			this.signerToEdit = signer
+			if (signer.identifyMethods?.length) {
+				const signerMethod = signer.identifyMethods[0].method
+				this.activeTab = `tab-${signerMethod}`
+			}
 			this.filesStore.enableIdentifySigner()
+		},
+		customizeMessage(signer) {
+			this.signerToEdit = signer
+			this.filesStore.enableIdentifySigner()
+		},
+		onTabChange(tabId) {
+			if (this.activeTab !== tabId) {
+				this.activeTab = tabId
+				this.debouncedTabChange(tabId)
+			}
+		},
+		updateSigningOrder(signer, value) {
+			const order = parseInt(value, 10)
+			const file = this.filesStore.getFile()
+
+			if (isNaN(order)) {
+				return
+			}
+
+			const currentIndex = file.signers.findIndex(s => s.identify === signer.identify)
+			if (currentIndex === -1) {
+				return
+			}
+
+			this.$set(file.signers[currentIndex], 'signingOrder', order)
+
+			const sortedSigners = [...file.signers].sort((a, b) => {
+				const orderA = a.signingOrder || 999
+				const orderB = b.signingOrder || 999
+				if (orderA === orderB) {
+					return 0
+				}
+				return orderA - orderB
+			})
+
+			this.$set(file, 'signers', sortedSigners)
+		},
+		confirmSigningOrder(signer) {
+			const file = this.filesStore.getFile()
+
+			const currentIndex = file.signers.findIndex(s => s.identify === signer.identify)
+			if (currentIndex === -1) {
+				return
+			}
+
+			const order = file.signers[currentIndex].signingOrder
+			const oldOrder = signer.signingOrder
+
+			for (let i = 0; i < file.signers.length; i++) {
+				if (i === currentIndex) continue
+
+				const currentItemOrder = file.signers[i].signingOrder
+
+				if (order < oldOrder) {
+					if (currentItemOrder >= order && currentItemOrder < oldOrder) {
+						this.$set(file.signers[i], 'signingOrder', currentItemOrder + 1)
+					}
+				} else if (order > oldOrder) {
+					if (currentItemOrder > oldOrder && currentItemOrder <= order) {
+						this.$set(file.signers[i], 'signingOrder', currentItemOrder - 1)
+					}
+				}
+			}
+
+			const sortedSigners = [...file.signers].sort((a, b) => {
+				const orderA = a.signingOrder || 999
+				const orderB = b.signingOrder || 999
+				return orderA - orderB
+			})
+
+			this.normalizeSigningOrders(sortedSigners)
+
+			this.$set(file, 'signers', sortedSigners)
+
+			this.debouncedSave()
 		},
 		async sendNotify(signer) {
 			const body = {
@@ -253,6 +824,38 @@ export default {
 					showError(response.data.ocs.data.message)
 				})
 
+		},
+		async requestSignatureForSigner(signer) {
+			this.selectedSigner = signer
+			this.showConfirmRequestSigner = true
+		},
+		async confirmRequestSigner() {
+			if (!this.selectedSigner) return
+
+			this.hasLoading = true
+			try {
+				const file = this.filesStore.getFile()
+				const signers = file.signers.map(s => {
+					if (s.signRequestId === this.selectedSigner.signRequestId) {
+						return { ...s, status: 1 }
+					}
+					return s
+				})
+				await this.filesStore.updateSignatureRequest({
+					visibleElements: [],
+					signers,
+				})
+				showSuccess(t('libresign', 'Signature requested'))
+				this.showConfirmRequestSigner = false
+				this.selectedSigner = null
+			} catch (error) {
+				if (error.response?.data?.ocs?.data?.message) {
+					showError(error.response.data.ocs.data.message)
+				} else if (error.response?.data?.ocs?.data?.errors) {
+					error.response.data.ocs.data.errors.forEach(error => showError(error.message))
+				}
+			}
+			this.hasLoading = false
 		},
 		async sign() {
 			const uuid = this.filesStore.getFile().signers
@@ -272,59 +875,34 @@ export default {
 		},
 		async save() {
 			this.hasLoading = true
-			const config = {
-				url: generateOcsUrl('/apps/libresign/api/v1/request-signature'),
-				data: {
-					name: this.filesStore.getFile()?.name,
-					users: [],
-				},
-			};
-			(this.filesStore.getFile()?.signers ?? []).forEach(signer => {
-				const user = {
-					displayName: signer.displayName,
-					identify: {},
+			try {
+				await this.filesStore.saveWithVisibleElements({ visibleElements: [] })
+				emit('libresign:show-visible-elements')
+			} catch (error) {
+				if (error.response?.data?.ocs?.data?.message) {
+					showError(error.response.data.ocs.data.message)
+				} else if (error.response?.data?.ocs?.data?.errors) {
+					error.response.data.ocs.data.errors.forEach(error => showError(error.message))
 				}
-				signer.identifyMethods.forEach(method => {
-					user.notify = false
-					if (method.method === 'account') {
-						user.identify.account = method?.value?.id ?? method?.value ?? signer.uid
-					} else if (method.method === 'email') {
-						user.identify.email = method?.value?.id ?? method?.value ?? signer.email
-					} else {
-						user.identify[method.method] = method.value
-					}
-				})
-				config.data.users.push(user)
-			})
-			if (this.filesStore.getFile()?.status) {
-				config.data.status = this.filesStore.getFile()?.status
-			} else if (!this.isSignElementsAvailable()) {
-				config.data.status = 1
-			} else {
-				config.data.status = 0
 			}
-
-			if (this.filesStore.getFile().uuid) {
-				config.data.uuid = this.filesStore.getFile().uuid
-				config.method = 'patch'
-			} else {
-				config.data.file = {
-					fileId: this.filesStore.selectedNodeId,
+			this.hasLoading = false
+		},
+		async request() {
+			this.showConfirmRequest = true
+		},
+		async confirmRequest() {
+			this.hasLoading = true
+			try {
+				const response = await this.filesStore.updateSignatureRequest({ visibleElements: [], status: 1 })
+				showSuccess(t('libresign', response.message))
+				this.showConfirmRequest = false
+			} catch (error) {
+				if (error.response?.data?.ocs?.data?.message) {
+					showError(error.response.data.ocs.data.message)
+				} else if (error.response?.data?.ocs?.data?.errors) {
+					error.response.data.ocs.data.errors.forEach(error => showError(error.message))
 				}
-				config.method = 'post'
 			}
-			await axios(config)
-				.then(({ data }) => {
-					this.filesStore.addFile(data.ocs.data.data)
-					emit('libresign:show-visible-elements')
-				})
-				.catch(({ response }) => {
-					if (response?.data?.ocs?.data?.message) {
-						showError(response.data.ocs.data.message)
-					} else if (response?.data?.ocs?.data?.errors) {
-						response.data.ocs.data.errors.forEach(error => showError(error.message))
-					}
-				})
 			this.hasLoading = false
 		},
 		openFile() {
@@ -349,10 +927,21 @@ export default {
 </script>
 <style lang="scss" scoped>
 
-.action-buttons{
+:deep(.checkbox-radio-switch) {
+	margin: 8px 0;
+}
+
+.action-buttons {
 	display: flex;
-	box-sizing: border-box;
-	grid-gap: 10px;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.button-group {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
 }
 
 .iframe {

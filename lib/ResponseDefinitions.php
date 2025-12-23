@@ -28,24 +28,28 @@ namespace OCA\Libresign;
  *         email?: string,
  *         account?: string,
  *     },
+ *     displayName?: string,
+ *     description?: string,
+ *     notify?: non-negative-int,
+ *     signingOrder?: non-negative-int,
  * }
  * @psalm-type LibresignNewFile = array{
  *     base64?: string,
  *     fileId?: non-negative-int,
  *     url?: string,
  * }
- * @psalm-type LibresignAccountFile = array{
+ * @psalm-type LibresignIdDocs = array{
  *     file: LibresignNewFile,
  *     name?: string,
  *     type?: string,
  * }
  * @psalm-type LibresignNextcloudFile = array{
  *     message: string,
- *     name: string,
+ *     name: non-falsy-string,
  *     id: int,
- *     etag: string,
- *     path: string,
- *     type: string,
+ *     status: int,
+ *     statusText: string,
+ *     created_at: string,
  * }
  * @psalm-type LibresignIdentifyAccount = array{
  *     id: non-negative-int,
@@ -54,6 +58,7 @@ namespace OCA\Libresign;
  *     subname: string,
  *     shareType: 0|4,
  *     icon?: 'icon-mail'|'icon-user',
+ *     acceptsEmailNotifications?: boolean,
  * }
  * @psalm-type LibresignPagination = array{
  *     total: non-negative-int,
@@ -68,6 +73,8 @@ namespace OCA\Libresign;
  *     subject: string,
  *     issuer: string,
  *     extensions: string,
+ *     serialNumber: string,
+ *     serialNumberHex: string,
  *     validate: array{
  *         from: string,
  *         to: string,
@@ -170,6 +177,9 @@ namespace OCA\Libresign;
  *     hash_algorithm?: string,
  *     me: bool,
  *     signRequestId: non-negative-int,
+ *     status: 0|1|2,
+ *     statusText: string,
+ *     signingOrder?: non-negative-int,
  *     identifyMethods?: LibresignIdentifyMethod[],
  *     visibleElements?: LibresignVisibleElement[],
  *     signatureMethods?: LibresignSignatureMethods,
@@ -180,6 +190,8 @@ namespace OCA\Libresign;
  *     status: 0|1|2|3|4,
  *     statusText: string,
  *     nodeId: non-negative-int,
+ *     signatureFlow: int,
+ *     docmdpLevel: int,
  *     totalPages: non-negative-int,
  *     size: non-negative-int,
  *     pdfVersion: string,
@@ -190,6 +202,11 @@ namespace OCA\Libresign;
  *     },
  *     file: string,
  *     url?: string,
+ *     metadata?: array{
+ *         extension: string,
+ *         p: int,
+ *         d?: list<array{w: float, h: float}>,
+ *     },
  *     signers?: LibresignSigner[],
  *     settings?: LibresignSettings,
  *     messages?: array{
@@ -217,6 +234,7 @@ namespace OCA\Libresign;
  *         file: array{
  *             type: string,
  *             nodeId: non-negative-int,
+ *             signedNodeId: non-negative-int,
  *             url: string,
  *         },
  *         callback: ?string,

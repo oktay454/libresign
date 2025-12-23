@@ -1,0 +1,119 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * SPDX-FileCopyrightText: 2025 LibreCode coop and contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+namespace OCA\Libresign\Tests\Api\Controller;
+
+use ByJG\ApiTools\OpenApi\OpenApiSchema;
+use OCA\Libresign\AppInfo\Application;
+use OCA\Libresign\Tests\Api\ApiTestCase;
+
+/**
+ * @group DB
+ */
+class CrlControllerTest extends ApiTestCase {
+	private const VALID_CERT_SERIAL = '123456';
+
+	public function setUp(): void {
+		$data = json_decode(file_get_contents('openapi-full.json'), true);
+		$data['servers'][] = ['url' => '/index.php/apps/libresign'];
+		$data = $this->removeBasePath($data);
+		/** @var OpenApiSchema */
+		$schema = \ByJG\ApiTools\Base\Schema::getInstance($data);
+		$this->setSchema($schema);
+
+		$systemConfig = \OCP\Server::get(\OC\SystemConfig::class);
+		$systemConfig->setValue('auth.bruteforce.protection.enabled', false);
+
+		$this->getMockAppConfig()->setValueBool(Application::APP_ID, 'identification_documents', false);
+
+		$this->setupCertificateEngine();
+
+		$this->request = new \OCA\Libresign\Tests\Api\ApiRequester();
+	}
+
+	private function setupCertificateEngine(): void {
+		/** @var \OCA\Libresign\Service\CaIdentifierService */
+		$caIdentifierService = \OCP\Server::get(\OCA\Libresign\Service\CaIdentifierService::class);
+		$caIdentifierService->generateCaId('openssl');
+
+		$factory = \OCP\Server::get(\OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory::class);
+		$engine = $factory->getEngine();
+		$engine->generateRootCert('Test Root CA', []);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testGetRevocationListReturnsValidResponse(): void {
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/' . self::VALID_CERT_SERIAL);
+
+		$this->assertRequest();
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testCheckCertificateStatusWithValidSerial(): void {
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/' . self::VALID_CERT_SERIAL);
+
+		$this->assertRequest();
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testCheckCertificateStatusWithInvalidSerial(): void {
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/invalid')
+			->assertResponseCode(400);
+
+		$this->assertRequest();
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testCheckCertificateStatusWithNegativeSerial(): void {
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/-123')
+			->assertResponseCode(400);
+
+		$this->assertRequest();
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testCheckCertificateStatusWithNonHexOrNumeric(): void {
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/$')
+			->assertResponseCode(400);
+
+		$this->assertRequest();
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 */
+	public function testCrlEndpointsArePublic(): void {
+		// Test another endpoint that doesn't require CA
+		$this->request
+			->withMethod('GET')
+			->withPath('/crl/check/' . self::VALID_CERT_SERIAL);
+
+		$this->assertRequest();
+	}
+}

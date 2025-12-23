@@ -5,6 +5,7 @@
 
 <template>
 	<NcSettingsSection :name="name">
+		<SupportProject />
 		<CertificateEngine />
 		<DownloadBinaries />
 		<ConfigureCheck />
@@ -13,6 +14,8 @@
 		<IdentificationFactors />
 		<ExpirationRules />
 		<Validation />
+		<DocMDP />
+		<SignatureFlow />
 		<AllowedGroups />
 		<LegalInformation />
 		<IdentificationDocuments />
@@ -33,6 +36,7 @@ import CertificateEngine from './CertificateEngine.vue'
 import CollectMetadata from './CollectMetadata.vue'
 import ConfigureCheck from './ConfigureCheck.vue'
 import DefaultUserFolder from './DefaultUserFolder.vue'
+import DocMDP from './DocMDP.vue'
 import DownloadBinaries from './DownloadBinaries.vue'
 import ExpirationRules from './ExpirationRules.vue'
 import IdentificationDocuments from './IdentificationDocuments.vue'
@@ -41,8 +45,10 @@ import LegalInformation from './LegalInformation.vue'
 import Reminders from './Reminders.vue'
 import RootCertificateCfssl from './RootCertificateCfssl.vue'
 import RootCertificateOpenSsl from './RootCertificateOpenSsl.vue'
+import SignatureFlow from './SignatureFlow.vue'
 import SignatureHashAlgorithm from './SignatureHashAlgorithm.vue'
 import SignatureStamp from './SignatureStamp.vue'
+import SupportProject from './SupportProject.vue'
 import TSA from './TSA.vue'
 import Validation from './Validation.vue'
 
@@ -54,19 +60,22 @@ export default {
 		CollectMetadata,
 		ConfigureCheck,
 		DefaultUserFolder,
+		DocMDP,
 		DownloadBinaries,
 		ExpirationRules,
 		IdentificationDocuments,
 		IdentificationFactors,
 		LegalInformation,
 		NcSettingsSection,
+		Reminders,
 		RootCertificateCfssl,
 		RootCertificateOpenSsl,
+		SignatureFlow,
 		SignatureHashAlgorithm,
 		SignatureStamp,
+		SupportProject,
 		TSA,
 		Validation,
-		Reminders,
 	},
 	data() {
 		return {

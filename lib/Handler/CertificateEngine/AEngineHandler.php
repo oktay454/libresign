@@ -12,7 +12,9 @@ use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\EmptyCertificateException;
 use OCA\Libresign\Exception\InvalidPasswordException;
 use OCA\Libresign\Exception\LibresignException;
+use OCA\Libresign\Helper\ConfigureCheckHelper;
 use OCA\Libresign\Helper\MagicGetterSetterTrait;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Service\CertificatePolicyService;
 use OCP\Files\AppData\IAppDataFactory;
 use OCP\Files\IAppData;
@@ -21,8 +23,10 @@ use OCP\IAppConfig;
 use OCP\IConfig;
 use OCP\IDateTimeFormatter;
 use OCP\ITempManager;
+use OCP\IURLGenerator;
 use OpenSSLAsymmetricKey;
 use OpenSSLCertificate;
+use Psr\Log\LoggerInterface;
 use ReflectionClass;
 
 /**
@@ -42,8 +46,8 @@ use ReflectionClass;
  * @method string getLocality()
  * @method IEngineHandler setOrganization(string $organization)
  * @method string getOrganization()
- * @method IEngineHandler setOrganizationalUnit(string $organizationalUnit)
- * @method string getOrganizationalUnit()
+ * @method IEngineHandler setOrganizationalUnit(array $organizationalUnit)
+ * @method array getOrganizationalUnit()
  * @method IEngineHandler setUID(string $UID)
  * @method string getName()
  */
@@ -58,12 +62,13 @@ abstract class AEngineHandler implements IEngineHandler {
 	protected string $state = '';
 	protected string $locality = '';
 	protected string $organization = '';
-	protected string $organizationalUnit = '';
+	protected array $organizationalUnit = [];
 	protected string $UID = '';
 	protected string $password = '';
 	protected string $configPath = '';
 	protected string $engine = '';
 	protected string $certificate = '';
+	protected string $currentCaId = '';
 	protected IAppData $appData;
 
 	public function __construct(
@@ -73,6 +78,9 @@ abstract class AEngineHandler implements IEngineHandler {
 		protected IDateTimeFormatter $dateTimeFormatter,
 		protected ITempManager $tempManager,
 		protected CertificatePolicyService $certificatePolicyService,
+		protected IURLGenerator $urlGenerator,
+		protected CaIdentifierService $caIdentifierService,
+		protected LoggerInterface $logger,
 	) {
 		$this->appData = $appDataFactory->get('libresign');
 	}
@@ -132,14 +140,56 @@ abstract class AEngineHandler implements IEngineHandler {
 		return $return;
 	}
 
+	public function getCaId(): string {
+		$caId = $this->caIdentifierService->getCaId();
+		if (empty($caId)) {
+			$this->appConfig->clearCache(true);
+			$caId = $this->caIdentifierService->getCaId() ?: $this->caIdentifierService->generateCaId($this->getName());
+		}
+		return $caId;
+	}
+
+	#[\Override]
+	public function parseCertificate(string $certificate): array {
+		return $this->parseX509($certificate);
+	}
+
 	private function parseX509(string $x509): array {
 		$parsed = openssl_x509_parse(openssl_x509_read($x509));
 
 		$return = self::convertArrayToUtf8($parsed);
 
+		foreach (['subject', 'issuer'] as $actor) {
+			foreach ($return[$actor] as $part => $value) {
+				if (is_string($value) && str_contains($value, ', ')) {
+					$return[$actor][$part] = explode(', ', $value);
+				} else {
+					$return[$actor][$part] = $value;
+				}
+			}
+		}
+
 		$return['valid_from'] = $this->dateTimeFormatter->formatDateTime($parsed['validFrom_time_t']);
 		$return['valid_to'] = $this->dateTimeFormatter->formatDateTime($parsed['validTo_time_t']);
+
+		$this->addCrlValidationInfo($return, $x509);
+
 		return $return;
+	}
+
+	private function addCrlValidationInfo(array &$certData, string $certPem): void {
+		if (isset($certData['extensions']['crlDistributionPoints'])) {
+			$crlDistributionPoints = $certData['extensions']['crlDistributionPoints'];
+
+			preg_match_all('/URI:([^\s,\n]+)/', $crlDistributionPoints, $matches);
+			$extractedUrls = $matches[1] ?? [];
+
+			$certData['crl_urls'] = $extractedUrls;
+			$certData['crl_validation'] = $this->validateCrlFromUrls($extractedUrls, $certPem);
+		} else {
+			$certData['crl_validation'] = 'missing';
+			$certData['crl_urls'] = [];
+		}
 	}
 
 	private static function convertArrayToUtf8($array) {
@@ -205,9 +255,38 @@ abstract class AEngineHandler implements IEngineHandler {
 		};
 	}
 
+	#[\Override]
 	public function setEngine(string $engine): void {
 		$this->appConfig->setValueString(Application::APP_ID, 'certificate_engine', $engine);
 		$this->engine = $engine;
+		$this->configureIdentifyMethodsForEngine($engine);
+	}
+
+	/**
+	 * Configure identification methods based on the certificate engine.
+	 *
+	 * When the engine is set to 'none', only the 'account' identification method
+	 * is allowed. This is because:
+	 * - The 'none' engine doesn't generate digital certificates
+	 * - Without certificates, only basic password authentication is viable
+	 * - The 'account' method ensures users authenticate with their Nextcloud credentials
+	 *
+	 * For other engines (openssl, cfssl, java), the identification methods remain
+	 * unchanged to preserve existing configurations.
+	 *
+	 * @param string $engine The certificate engine name (i.e. 'none', 'openssl', 'cfssl')
+	 */
+	private function configureIdentifyMethodsForEngine(string $engine): void {
+		if ($engine !== 'none') {
+			return;
+		}
+
+		$config = [[
+			'name' => 'account',
+			'enabled' => true,
+			'mandatory' => true,
+		]];
+		$this->appConfig->setValueArray(Application::APP_ID, 'identify_methods', $config);
 	}
 
 	#[\Override]
@@ -243,34 +322,81 @@ abstract class AEngineHandler implements IEngineHandler {
 		return $this;
 	}
 
-	public function getConfigPath(): string {
+	#[\Override]
+	public function getCurrentConfigPath(): string {
 		if ($this->configPath) {
 			return $this->configPath;
 		}
-		$this->configPath = $this->appConfig->getValueString(Application::APP_ID, 'config_path');
-		if ($this->configPath && str_ends_with($this->configPath, $this->getName() . '_config')) {
+
+		$customConfigPath = $this->appConfig->getValueString(Application::APP_ID, 'config_path');
+		if ($customConfigPath && is_dir($customConfigPath)) {
+			$this->configPath = $customConfigPath;
 			return $this->configPath;
 		}
-		try {
-			$folder = $this->appData->getFolder($this->getName() . '_config');
-			if (!$folder->fileExists('/')) {
-				throw new \Exception();
-			}
-		} catch (\Throwable) {
-			$folder = $this->appData->newFolder($this->getName() . '_config');
-		}
-		$dataDir = $this->config->getSystemValue('datadirectory', \OC::$SERVERROOT . '/data/');
-		$this->configPath = $dataDir . '/' . $this->getInternalPathOfFolder($folder);
-		if (!is_dir($this->configPath)) {
-			$currentFile = realpath(__DIR__);
-			$owner = posix_getpwuid(fileowner($currentFile));
-			$fullCommand = 'mkdir -p "' . $this->configPath . '"';
-			if (posix_getuid() !== $owner['uid']) {
-				$fullCommand = 'runuser -u ' . $owner['name'] . ' -- ' . $fullCommand;
-			}
-			exec($fullCommand);
+
+		$this->configPath = $this->initializePkiConfigPath();
+		if (!empty($this->configPath)) {
+			$this->appConfig->setValueString(Application::APP_ID, 'config_path', $this->configPath);
 		}
 		return $this->configPath;
+	}
+
+	#[\Override]
+	public function getConfigPathByParams(string $instanceId, int $generation): string {
+		$engineName = $this->getName();
+
+		$pkiDirName = $this->caIdentifierService->generatePkiDirectoryNameFromParams($instanceId, $generation, $engineName);
+		$dataDir = $this->config->getSystemValue('datadirectory', \OC::$SERVERROOT . '/data/');
+		$systemInstanceId = $this->config->getSystemValue('instanceid');
+		$pkiPath = $dataDir . '/appdata_' . $systemInstanceId . '/libresign/' . $pkiDirName;
+
+		if (!is_dir($pkiPath)) {
+			throw new \RuntimeException("Config path does not exist for instanceId: {$instanceId}, generation: {$generation}");
+		}
+
+		return $pkiPath;
+	}
+
+	private function initializePkiConfigPath(): string {
+		$caId = $this->getCaId();
+		if (empty($caId)) {
+			return '';
+		}
+		$pkiDirName = $this->caIdentifierService->generatePkiDirectoryName($caId);
+		$dataDir = $this->config->getSystemValue('datadirectory', \OC::$SERVERROOT . '/data/');
+		$systemInstanceId = $this->config->getSystemValue('instanceid');
+		$pkiPath = $dataDir . '/appdata_' . $systemInstanceId . '/libresign/' . $pkiDirName;
+
+		if (!is_dir($pkiPath)) {
+			$this->createDirectoryWithCorrectOwnership($pkiPath);
+		}
+
+		return $pkiPath;
+	}
+
+	private function createDirectoryWithCorrectOwnership(string $path): void {
+		$ownerInfo = $this->getFilesOwnerInfo();
+		$fullCommand = 'mkdir -p ' . escapeshellarg($path);
+
+		if (posix_getuid() !== $ownerInfo['uid']) {
+			$fullCommand = 'runuser -u ' . $ownerInfo['name'] . ' -- ' . $fullCommand;
+		}
+
+		exec($fullCommand);
+	}
+
+	private function getFilesOwnerInfo(): array {
+		$currentFile = realpath(__DIR__);
+		$owner = fileowner($currentFile);
+		if ($owner === false) {
+			throw new \RuntimeException('Unable to get file information');
+		}
+		$ownerInfo = posix_getpwuid($owner);
+		if ($ownerInfo === false) {
+			throw new \RuntimeException('Unable to get file owner information');
+		}
+
+		return $ownerInfo;
 	}
 
 	/**
@@ -328,22 +454,15 @@ abstract class AEngineHandler implements IEngineHandler {
 	}
 
 	#[\Override]
-	public function expirity(): int {
-		$expirity = $this->appConfig->getValueInt(Application::APP_ID, 'expiry_in_days', 365);
-		if ($expirity < 0) {
-			return 365;
-		}
-		return $expirity;
+	public function getLeafExpiryInDays(): int {
+		$exp = $this->appConfig->getValueInt(Application::APP_ID, 'expiry_in_days', 365);
+		return $exp > 0 ? $exp : 365;
 	}
 
 	#[\Override]
-	public function isSetupOk(): bool {
-		return strlen($this->appConfig->getValueString(Application::APP_ID, 'authkey', '')) > 0;
-	}
-
-	#[\Override]
-	public function configureCheck(): array {
-		throw new \Exception('Necessary to implement configureCheck method');
+	public function getCaExpiryInDays(): int {
+		$exp = $this->appConfig->getValueInt(Application::APP_ID, 'ca_expiry_in_days', 3650); // 10 years
+		return $exp > 0 ? $exp : 3650;
 	}
 
 	private function getCertificatePolicy(): array {
@@ -359,11 +478,254 @@ abstract class AEngineHandler implements IEngineHandler {
 		return $return;
 	}
 
+	abstract protected function getConfigureCheckResourceName(): string;
+
+	abstract protected function getCertificateRegenerationTip(): string;
+
+	abstract protected function getEngineSpecificChecks(): array;
+
+	abstract protected function getSetupSuccessMessage(): string;
+
+	abstract protected function getSetupErrorMessage(): string;
+
+	abstract protected function getSetupErrorTip(): string;
+
+	#[\Override]
+	public function configureCheck(): array {
+		$checks = $this->getEngineSpecificChecks();
+
+		if (!$this->isSetupOk()) {
+			return array_merge($checks, [
+				(new ConfigureCheckHelper())
+					->setErrorMessage($this->getSetupErrorMessage())
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip($this->getSetupErrorTip())
+			]);
+		}
+
+		$checks[] = (new ConfigureCheckHelper())
+			->setSuccessMessage($this->getSetupSuccessMessage())
+			->setResource($this->getConfigureCheckResourceName());
+
+		$modernFeaturesCheck = $this->checkRootCertificateModernFeatures();
+		if ($modernFeaturesCheck) {
+			$checks[] = $modernFeaturesCheck;
+		}
+
+		$expiryCheck = $this->checkRootCertificateExpiry();
+		if ($expiryCheck) {
+			$checks[] = $expiryCheck;
+		}
+
+		return $checks;
+	}
+
+	protected function checkRootCertificateModernFeatures(): ?ConfigureCheckHelper {
+		$configPath = $this->getCurrentConfigPath();
+		$caCertPath = $configPath . DIRECTORY_SEPARATOR . 'ca.pem';
+
+		try {
+			$certContent = file_get_contents($caCertPath);
+			if (!$certContent) {
+				return (new ConfigureCheckHelper())
+					->setErrorMessage('Failed to read root certificate file')
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip('Check file permissions and disk space');
+			}
+
+			$x509Resource = openssl_x509_read($certContent);
+			if (!$x509Resource) {
+				return (new ConfigureCheckHelper())
+					->setErrorMessage('Failed to parse root certificate')
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip('Root certificate file may be corrupted or invalid');
+			}
+
+			$parsed = openssl_x509_parse($x509Resource);
+			if (!$parsed) {
+				return (new ConfigureCheckHelper())
+					->setErrorMessage('Failed to extract root certificate information')
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip('Root certificate may be in an unsupported format');
+			}
+
+			$criticalIssues = [];
+			$minorIssues = [];
+
+			if (isset($parsed['serialNumber'])) {
+				$serialNumber = $parsed['serialNumber'];
+				$serialDecimal = hexdec($serialNumber);
+				if ($serialDecimal <= 1) {
+					$minorIssues[] = 'Serial number is simple (zero or one)';
+				}
+			} else {
+				$criticalIssues[] = 'Serial number is missing';
+			}
+
+			$missingExtensions = [];
+			if (!isset($parsed['extensions']['subjectKeyIdentifier'])) {
+				$missingExtensions[] = 'Subject Key Identifier (SKI)';
+			}
+
+			$isSelfSigned = (isset($parsed['issuer']) && isset($parsed['subject'])
+							&& $parsed['issuer'] === $parsed['subject']);
+
+			/**
+			 * @todo workarround for missing AKI at certificates generated by CFSSL.
+			 *
+			 * CFSSL does not add Authority Key Identifier (AKI) to self-signed root certificates.
+			 */
+			if (!$isSelfSigned && !isset($parsed['extensions']['authorityKeyIdentifier'])) {
+				$missingExtensions[] = 'Authority Key Identifier (AKI)';
+			}
+
+			if (!isset($parsed['extensions']['crlDistributionPoints'])) {
+				$missingExtensions[] = 'CRL Distribution Points';
+			}
+
+			if (!empty($missingExtensions)) {
+				$extensionsList = implode(', ', $missingExtensions);
+				$minorIssues[] = "Missing modern extensions: {$extensionsList}";
+			}
+
+			$hasLibresignCaUuid = $this->validateLibresignCaUuidInCertificate($parsed);
+			if (!$hasLibresignCaUuid) {
+				$minorIssues[] = 'LibreSign CA UUID not found in Organizational Unit';
+			}
+
+			if (!empty($criticalIssues)) {
+				$issuesList = implode(', ', $criticalIssues);
+				return (new ConfigureCheckHelper())
+					->setErrorMessage("Root certificate has critical issues: {$issuesList}")
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip($this->getCertificateRegenerationTip());
+			}
+
+			if (!empty($minorIssues)) {
+				$issuesList = implode(', ', $minorIssues);
+				return (new ConfigureCheckHelper())
+					->setInfoMessage("Root certificate could benefit from modern features: {$issuesList}")
+					->setResource($this->getConfigureCheckResourceName())
+					->setTip($this->getCertificateRegenerationTip() . ' (recommended but not required)');
+			}
+
+			return null;
+
+		} catch (\Exception $e) {
+			return (new ConfigureCheckHelper())
+				->setErrorMessage('Failed to analyze root certificate: ' . $e->getMessage())
+				->setResource($this->getConfigureCheckResourceName())
+				->setTip('Check if the root certificate file is valid');
+		}
+	}
+
+	private function validateLibresignCaUuidInCertificate(array $parsed): bool {
+		if (!isset($parsed['subject']['OU'])) {
+			return false;
+		}
+
+		$instanceId = $this->getLibreSignInstanceId();
+		if (empty($instanceId)) {
+			return false;
+		}
+
+		$organizationalUnits = $parsed['subject']['OU'];
+
+		if (is_string($organizationalUnits)) {
+			if (str_contains($organizationalUnits, ', ')) {
+				$organizationalUnits = explode(', ', $organizationalUnits);
+			} else {
+				$organizationalUnits = [$organizationalUnits];
+			}
+		}
+
+		foreach ($organizationalUnits as $ou) {
+			$ou = trim($ou);
+			if ($this->caIdentifierService->isValidCaId($ou, $instanceId)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private function getLibreSignInstanceId(): string {
+		$instanceId = $this->appConfig->getValueString(Application::APP_ID, 'instance_id', '');
+		if (strlen($instanceId) === 10) {
+			return $instanceId;
+		}
+		return '';
+	}
+
+	private function calculateRemainingDays(int $validToTimestamp): int {
+		$secondsPerDay = 60 * 60 * 24;
+		$remainingSeconds = $validToTimestamp - time();
+		return (int)ceil($remainingSeconds / $secondsPerDay);
+	}
+
+	protected function checkRootCertificateExpiry(): ?ConfigureCheckHelper {
+		$configPath = $this->getCurrentConfigPath();
+		$caCertPath = $configPath . DIRECTORY_SEPARATOR . 'ca.pem';
+
+		if (!file_exists($caCertPath)) {
+			return null;
+		}
+
+		$certContent = file_get_contents($caCertPath);
+		if (!$certContent) {
+			return null;
+		}
+
+		$x509Resource = openssl_x509_read($certContent);
+		if (!$x509Resource) {
+			return null;
+		}
+
+		$parsed = openssl_x509_parse($x509Resource);
+		if (!$parsed) {
+			return null;
+		}
+
+		$remainingDays = $this->calculateRemainingDays($parsed['validTo_time_t']);
+		$leafExpiryDays = $this->getLeafExpiryInDays();
+
+		if ($remainingDays < 0) {
+			return (new ConfigureCheckHelper())
+				->setErrorMessage('Root certificate has expired')
+				->setResource($this->getConfigureCheckResourceName())
+				->setTip($this->getCertificateRegenerationTip() . ' URGENT: Certificate is expired!');
+		}
+
+		if ($remainingDays <= 7) {
+			return (new ConfigureCheckHelper())
+				->setErrorMessage("Root certificate expires in {$remainingDays} days")
+				->setResource($this->getConfigureCheckResourceName())
+				->setTip($this->getCertificateRegenerationTip() . ' URGENT: Renew immediately!');
+		}
+
+		if ($remainingDays <= 30) {
+			return (new ConfigureCheckHelper())
+				->setErrorMessage("Root certificate expires in {$remainingDays} days")
+				->setResource($this->getConfigureCheckResourceName())
+				->setTip($this->getCertificateRegenerationTip() . ' Renewal recommended soon.');
+		}
+
+		if ($remainingDays <= $leafExpiryDays) {
+			return (new ConfigureCheckHelper())
+				->setInfoMessage("Root certificate expires in {$remainingDays} days (leaf validity: {$leafExpiryDays} days)")
+				->setResource($this->getConfigureCheckResourceName())
+				->setTip('Root certificate should be renewed to ensure it can sign CRLs for all issued leaf certificates.');
+		}
+
+		return null;
+	}
+
 	#[\Override]
 	public function toArray(): array {
+		$generated = $this->isSetupOk();
 		$return = [
-			'configPath' => $this->getConfigPath(),
-			'generated' => $this->isSetupOk(),
+			'configPath' => $this->getConfigPathForApi($generated),
+			'generated' => $generated,
 			'rootCert' => [
 				'commonName' => $this->getCommonName(),
 				'names' => [],
@@ -377,9 +739,392 @@ abstract class AEngineHandler implements IEngineHandler {
 		foreach ($names as $name => $value) {
 			$return['rootCert']['names'][] = [
 				'id' => $name,
-				'value' => $value,
+				'value' => $this->filterNameValue($name, $value, $generated),
 			];
 		}
 		return $return;
+	}
+
+	private function getConfigPathForApi(bool $generated): string {
+		return $generated ? $this->getCurrentConfigPath() : '';
+	}
+
+	private function filterNameValue(string $name, mixed $value, bool $generated): mixed {
+		if ($name === 'OU' && is_array($value) && !$generated) {
+			$filtered = $this->removeCaIdFromOrganizationalUnit($value);
+			return empty($filtered) ? null : $filtered;
+		}
+		return $value;
+	}
+
+	private function removeCaIdFromOrganizationalUnit(array $organizationalUnits): array {
+		$filtered = array_filter(
+			$organizationalUnits,
+			fn ($item) => !str_starts_with($item, 'libresign-ca-id:')
+		);
+		return array_values($filtered);
+	}
+
+	protected function getCrlDistributionUrl(): string {
+		$caIdParsed = $this->caIdentifierService->getCaIdParsed();
+		return $this->urlGenerator->linkToRouteAbsolute('libresign.crl.getRevocationList', [
+			'instanceId' => $caIdParsed['instanceId'],
+			'generation' => $caIdParsed['generation'],
+			'engineType' => $caIdParsed['engineType'],
+		]);
+	}
+
+	private function validateCrlFromUrls(array $crlUrls, string $certPem): string {
+		if (empty($crlUrls)) {
+			return 'no_urls';
+		}
+
+		$accessibleUrls = 0;
+		foreach ($crlUrls as $crlUrl) {
+			try {
+				$validationResult = $this->downloadAndValidateCrl($crlUrl, $certPem);
+				if ($validationResult === 'valid') {
+					return 'valid';
+				}
+				if ($validationResult === 'revoked') {
+					return 'revoked';
+				}
+				$accessibleUrls++;
+			} catch (\Exception $e) {
+				continue;
+			}
+		}
+
+		if ($accessibleUrls === 0) {
+			return 'urls_inaccessible';
+		}
+
+		return 'validation_failed';
+	}
+
+	private function downloadAndValidateCrl(string $crlUrl, string $certPem): string {
+		try {
+			if ($this->isLocalCrlUrl($crlUrl)) {
+				$crlContent = $this->generateLocalCrl($crlUrl);
+			} else {
+				$crlContent = $this->downloadCrlContent($crlUrl);
+			}
+
+			if (!$crlContent) {
+				throw new \Exception('Failed to get CRL content');
+			}
+
+			return $this->checkCertificateInCrl($certPem, $crlContent);
+
+		} catch (\Exception $e) {
+			return 'validation_error';
+		}
+	}
+
+	private function isLocalCrlUrl(string $url): bool {
+		$host = parse_url($url, PHP_URL_HOST);
+		if (!$host) {
+			return false;
+		}
+
+		$trustedDomains = $this->config->getSystemValue('trusted_domains', []);
+
+		return in_array($host, $trustedDomains, true);
+	}
+
+	private function generateLocalCrl(string $crlUrl): ?string {
+		try {
+			$templateUrl = $this->urlGenerator->linkToRouteAbsolute('libresign.crl.getRevocationList', [
+				'instanceId' => 'INSTANCEID',
+				'generation' => 999999,
+				'engineType' => 'ENGINETYPE',
+			]);
+
+			$patternUrl = str_replace('INSTANCEID', '([^/_]+)', $templateUrl);
+			$patternUrl = str_replace('999999', '(\d+)', $patternUrl);
+			$patternUrl = str_replace('ENGINETYPE', '([^/_]+)', $patternUrl);
+
+			$escapedPattern = str_replace([':', '/', '.'], ['\:', '\/', '\.'], $patternUrl);
+
+			$escapedPattern = str_replace('\/apps\/', '(?:\/index\.php)?\/apps\/', $escapedPattern);
+
+			$pattern = '/^' . $escapedPattern . '$/';
+			if (preg_match($pattern, $crlUrl, $matches)) {
+				$instanceId = $matches[1];
+				$generation = (int)$matches[2];
+				$engineType = $matches[3];
+
+				/** @var \OCA\Libresign\Service\CrlService */
+				$crlService = \OC::$server->get(\OCA\Libresign\Service\CrlService::class);
+
+				$crlData = $crlService->generateCrlDer($instanceId, $generation, $engineType);
+
+				return $crlData;
+			}
+
+			$this->logger->debug('CRL URL does not match expected pattern', ['url' => $crlUrl, 'pattern' => $pattern]);
+			return null;
+
+		} catch (\Exception $e) {
+			$this->logger->warning('Failed to generate local CRL: ' . $e->getMessage());
+			return null;
+		}
+	}
+
+	private function downloadCrlContent(string $url): ?string {
+		if (!filter_var($url, FILTER_VALIDATE_URL) || !in_array(parse_url($url, PHP_URL_SCHEME), ['http', 'https'])) {
+			return null;
+		}
+
+		$context = stream_context_create([
+			'http' => [
+				'timeout' => 30,
+				'user_agent' => 'LibreSign/1.0 CRL Validator',
+				'follow_location' => 1,
+				'max_redirects' => 3,
+			]
+		]);
+
+		$content = @file_get_contents($url, false, $context);
+		return $content !== false ? $content : null;
+	}
+
+	private function isSerialNumberInCrl(string $crlText, string $serialNumber): bool {
+		$normalizedSerial = strtoupper($serialNumber);
+		$normalizedSerial = ltrim($normalizedSerial, '0') ?: '0';
+
+		return preg_match('/Serial Number: 0*' . preg_quote($normalizedSerial, '/') . '/', $crlText) === 1;
+	}
+
+	private function checkCertificateInCrl(string $certPem, string $crlContent): string {
+		try {
+			$certResource = openssl_x509_read($certPem);
+			if (!$certResource) {
+				return 'validation_error';
+			}
+
+			$certData = openssl_x509_parse($certResource);
+			if (!isset($certData['serialNumber'])) {
+				return 'validation_error';
+			}
+
+			$tempCrlFile = $this->tempManager->getTemporaryFile('.crl');
+			file_put_contents($tempCrlFile, $crlContent);
+
+			try {
+				$crlTextCmd = sprintf(
+					'openssl crl -in %s -inform DER -text -noout',
+					escapeshellarg($tempCrlFile)
+				);
+
+				exec($crlTextCmd, $output, $exitCode);
+
+				if ($exitCode === 0) {
+					$crlText = implode("\n", $output);
+
+					if ($this->isSerialNumberInCrl($crlText, $certData['serialNumber'])
+						|| (!empty($certData['serialNumberHex']) && $this->isSerialNumberInCrl($crlText, $certData['serialNumberHex']))) {
+						return 'revoked';
+					}
+
+					return 'valid';
+				}
+
+				return 'validation_error';
+
+			} finally {
+				if (file_exists($tempCrlFile)) {
+					unlink($tempCrlFile);
+				}
+			}
+
+		} catch (\Exception $e) {
+			return 'validation_error';
+		}
+	}
+
+	#[\Override]
+	public function generateCrlDer(array $revokedCertificates, string $instanceId, int $generation, int $crlNumber): string {
+		$configPath = $this->getConfigPathByParams($instanceId, $generation);
+		$issuer = $this->loadCaIssuer($configPath);
+		$signedCrl = $this->createAndSignCrl($issuer, $revokedCertificates, $crlNumber);
+		$crlDerData = $this->saveCrlToDer($signedCrl, $configPath);
+
+		return $crlDerData;
+	}
+
+	private function loadCaIssuer(string $configPath): \phpseclib3\File\X509 {
+		$caCertPath = $configPath . DIRECTORY_SEPARATOR . 'ca.pem';
+		$caKeyPath = $configPath . DIRECTORY_SEPARATOR . 'ca-key.pem';
+
+		if (!file_exists($caCertPath) || !file_exists($caKeyPath)) {
+			$this->logger->error('CA certificate or private key not found', ['caCertPath' => $caCertPath, 'caKeyPath' => $caKeyPath]);
+			throw new \RuntimeException('CA certificate or private key not found. Run: occ libresign:configure:openssl');
+		}
+
+		$caCert = file_get_contents($caCertPath);
+		$caKey = file_get_contents($caKeyPath);
+
+		if (!$caCert || !$caKey) {
+			$this->logger->error('Failed to read CA certificate or private key', ['caCertPath' => $caCertPath, 'caKeyPath' => $caKeyPath]);
+			throw new \RuntimeException('Failed to read CA certificate or private key');
+		}
+
+		$issuer = new \phpseclib3\File\X509();
+		$issuer->loadX509($caCert);
+		$caPrivateKey = \phpseclib3\Crypt\PublicKeyLoader::load($caKey);
+
+		if (!$caPrivateKey instanceof \phpseclib3\Crypt\Common\PrivateKey) {
+			$this->logger->error('Loaded key is not a private key', ['keyType' => get_class($caPrivateKey)]);
+			throw new \RuntimeException('Loaded key is not a private key');
+		}
+
+		$issuer->setPrivateKey($caPrivateKey);
+		return $issuer;
+	}
+
+	private function createAndSignCrl(\phpseclib3\File\X509 $issuer, array $revokedCertificates, int $crlNumber): array {
+		$utcZone = new \DateTimeZone('UTC');
+		$crlToSign = new \phpseclib3\File\X509();
+		$crlToSign->setSerialNumber((string)$crlNumber, 10);
+		$crlToSign->setStartDate(new \DateTime('now', $utcZone));
+		$crlToSign->setEndDate(new \DateTime('+7 days', $utcZone));
+
+		$initialCrl = $crlToSign->signCRL($issuer, $crlToSign);
+		if ($initialCrl === false) {
+			$this->logger->error('Failed to create initial CRL structure');
+			throw new \RuntimeException('Failed to create initial CRL structure');
+		}
+
+		if (!empty($revokedCertificates)) {
+			$savedCrl = $crlToSign->saveCRL($initialCrl);
+			if ($savedCrl === false) {
+				$this->logger->error('Failed to save initial CRL structure');
+				throw new \RuntimeException('Failed to save initial CRL structure');
+			}
+
+			$crlToSign->loadCRL($savedCrl);
+
+			$dateFormat = 'D, d M Y H:i:s O';
+			foreach ($revokedCertificates as $cert) {
+				$serialNumber = $cert->getSerialNumber();
+				$normalizedSerial = ltrim($serialNumber, '0') ?: '0';
+				$crlToSign->revoke(
+					new \phpseclib3\Math\BigInteger($normalizedSerial, 16),
+					$cert->getRevokedAt()->format($dateFormat)
+				);
+			}
+
+			$signedCrl = $crlToSign->signCRL($issuer, $crlToSign);
+		} else {
+			$signedCrl = $initialCrl;
+		}
+
+		if ($signedCrl === false) {
+			$this->logger->error('Failed to sign CRL', ['crlNumber' => $crlNumber]);
+			throw new \RuntimeException('Failed to sign CRL');
+		}
+
+		if (!isset($signedCrl['signatureAlgorithm'])) {
+			$signedCrl['signatureAlgorithm'] = ['algorithm' => 'sha256WithRSAEncryption'];
+		}
+
+		return $signedCrl;
+	}
+
+	private function saveCrlToDer(array $signedCrl, string $configPath): string {
+		$crlDerPath = $configPath . DIRECTORY_SEPARATOR . 'crl.der';
+		$crlToSign = new \phpseclib3\File\X509();
+
+		$crlDerData = $crlToSign->saveCRL($signedCrl, \phpseclib3\File\X509::FORMAT_DER);
+
+		if ($crlDerData === false) {
+			$this->logger->error('Failed to save CRL in DER format');
+			throw new \RuntimeException('Failed to save CRL in DER format');
+		}
+
+		if (file_put_contents($crlDerPath, $crlDerData) === false) {
+			$this->logger->error('Failed to write CRL DER file', ['path' => $crlDerPath]);
+			throw new \RuntimeException('Failed to write CRL DER file');
+		}
+
+		return $crlDerData;
+	}
+
+	#[\Override]
+	public function validateRootCertificate(): void {
+		$configPath = $this->getCurrentConfigPath();
+		if (empty($configPath)) {
+			return;
+		}
+
+		if (!is_dir($configPath)) {
+			return;
+		}
+
+		$rootCertPath = $configPath . DIRECTORY_SEPARATOR . 'ca.pem';
+
+		if (!file_exists($rootCertPath)) {
+			return;
+		}
+
+		$rootCert = file_get_contents($rootCertPath);
+		if (empty($rootCert)) {
+			return;
+		}
+
+		$certificate = openssl_x509_read($rootCert);
+		if ($certificate === false) {
+			throw new LibresignException('Invalid root certificate content');
+		}
+		$certInfo = openssl_x509_parse($certificate);
+		if ($certInfo === false) {
+			throw new LibresignException('Failed to parse root certificate');
+		}
+
+		if ($this->checkCertificateRevoked($certInfo['serialNumber'])) {
+			$this->logger->error('Root certificate has been revoked', [
+				'ca_id' => $this->getCaId(),
+				'impact' => 'all_leaf_certificates_invalid',
+			]);
+			throw new LibresignException(
+				'Root certificate has been revoked. Please contact the administrator to regenerate the signing certificate.',
+				\OC\AppFramework\Http::STATUS_PRECONDITION_FAILED
+			);
+		}
+
+		if ($certInfo['validTo_time_t'] < time()) {
+			$this->logger->error('Root certificate has expired', [
+				'ca_id' => $this->getCaId(),
+			]);
+			throw new LibresignException(
+				'Root certificate has expired. Please contact the administrator to regenerate the signing certificate.',
+				\OC\AppFramework\Http::STATUS_PRECONDITION_FAILED
+			);
+		}
+
+		$remainingDays = $this->calculateRemainingDays($certInfo['validTo_time_t']);
+		$leafExpiryDays = $this->getLeafExpiryInDays();
+
+		if ($remainingDays <= $leafExpiryDays) {
+			$this->logger->warning('Root certificate renewal needed', [
+				'remaining_days' => $remainingDays,
+				'leaf_expiry_days' => $leafExpiryDays,
+			]);
+		}
+	}
+
+	private function checkCertificateRevoked(string $serialNumber): bool {
+		try {
+			/** @var \OCA\Libresign\Service\CrlService */
+			$crlService = \OC::$server->get(\OCA\Libresign\Service\CrlService::class);
+			$status = $crlService->getCertificateStatus($serialNumber);
+			return $status['status'] === 'revoked';
+		} catch (\Exception $e) {
+			$this->logger->warning('Failed to check root certificate revocation status', [
+				'error' => $e->getMessage()
+			]);
+			return false;
+		}
 	}
 }

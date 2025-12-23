@@ -3,19 +3,26 @@
   - SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 <template>
-	<VirtualList :data-component="userConfigStore.grid_view ? FileEntryGrid : FileEntry"
-		:loading="loading">
+	<VirtualList ref="table"
+		:data-component="userConfigStore.grid_view ? FileEntryGrid : FileEntry"
+		:loading="loading"
+		:caption="caption">
 		<template #filters>
 			<FileListFilters />
 		</template>
 		<template v-if="!isNoneSelected" #header-overlay>
-			<span class="files-list__selected">{{ n('libresign', '{count} selected', '{count} selected', selectionStore.selected.length, { count: selectionStore.selected.length }) }}</span>
+			<span class="files-list__selected">
+				{{ n('libresign', '{count} selected', '{count} selected', selectedNodes.length, { count: selectedNodes.length }) }}
+			</span>
 			<FilesListTableHeaderActions />
 		</template>
 		<template #header>
 			<!-- Table header and sort buttons -->
 			<FilesListTableHeader ref="thead"
 				:nodes="nodes" />
+		</template>
+		<template #empty>
+			<slot name="empty" />
 		</template>
 		<template #footer>
 			<FilesListTableFooter />
@@ -76,8 +83,14 @@ export default {
 		}
 	},
 	computed: {
+		selectedNodes() {
+			return this.selectionStore.selected
+		},
 		isNoneSelected() {
-			return this.selectionStore.selected.length === 0
+			return this.selectedNodes.length === 0
+		},
+		caption() {
+			return t('libresign', 'List of files. Column headers with buttons are sortable.')
 		},
 	},
 }
@@ -424,25 +437,22 @@ export default {
 				.button-vue__text {
 					// Remove bold from default button styling
 					font-weight: normal;
-				}
-			}
 		}
+	}
+}
 
-		.files-list__row-mtime,
-		.files-list__row-status {
-			color: var(--color-text-maxcontrast);
-		}
-		.files-list__row-status {
-			width: calc(var(--row-height) * 1.5);
-			// Right align content/text
-			justify-content: flex-end;
-		}
+	.files-list__row-mtime,
+	.files-list__row-status {
+		color: var(--color-text-maxcontrast);
+	}
+	.files-list__row-status {
+		width: calc(var(--row-height) * 2.5);
+		justify-content: center;
+	}
 
-		.files-list__row-mtime {
-			width: calc(var(--row-height) * 2);
-		}
-
-		.files-list__row-column-custom {
+	.files-list__row-mtime {
+		width: calc(var(--row-height) * 2);
+	}		.files-list__row-column-custom {
 			width: calc(var(--row-height) * 2);
 		}
 	}
@@ -453,6 +463,16 @@ export default {
 	.files-list :deep(.files-list__filters) {
 		// Reduce padding on mobile
 		padding-inline: var(--default-grid-baseline, 4px);
+	}
+}
+
+@media screen and (max-width: 768px) {
+	.files-list__row-status {
+		width: calc(var(--row-height) * 0.8) !important;
+	}
+
+	:deep(.files-list__row-status) {
+		width: calc(var(--row-height) * 0.8) !important;
 	}
 }
 

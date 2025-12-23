@@ -8,9 +8,12 @@ declare(strict_types=1);
 
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
+use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Handler\FooterHandler;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Service\FolderService;
+use OCA\Libresign\Tests\Fixtures\PdfFixtureCatalog;
 use OCP\Files\NotFoundException;
 use OCP\Files\NotPermittedException;
 use OCP\IAppConfig;
@@ -29,15 +32,19 @@ final class Pkcs12HandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private ITempManager $tempManager;
 	private LoggerInterface&MockObject $logger;
 	private CertificateEngineFactory&MockObject $certificateEngineFactory;
+	private CaIdentifierService&MockObject $caIdentifierService;
+	private DocMdpHandler&MockObject $docMdpHandler;
 
 	public function setUp(): void {
 		$this->folderService = $this->createMock(FolderService::class);
-		$this->appConfig = $this->getMockAppConfig();
+		$this->appConfig = $this->getMockAppConfigWithReset();
 		$this->certificateEngineFactory = $this->createMock(CertificateEngineFactory::class);
 		$this->l10n = \OCP\Server::get(IL10NFactory::class)->get(Application::APP_ID);
 		$this->footerHandler = $this->createMock(FooterHandler::class);
 		$this->tempManager = \OCP\Server::get(ITempManager::class);
 		$this->logger = $this->createMock(LoggerInterface::class);
+		$this->caIdentifierService = $this->createMock(CaIdentifierService::class);
+		$this->docMdpHandler = $this->createMock(DocMdpHandler::class);
 	}
 
 	private function getHandler(array $methods = []): Pkcs12Handler|MockObject {
@@ -51,6 +58,8 @@ final class Pkcs12HandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 					$this->footerHandler,
 					$this->tempManager,
 					$this->logger,
+					$this->caIdentifierService,
+					$this->docMdpHandler,
 				])
 				->onlyMethods($methods)
 				->getMock();
@@ -63,6 +72,8 @@ final class Pkcs12HandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->footerHandler,
 			$this->tempManager,
 			$this->logger,
+			$this->caIdentifierService,
+			$this->docMdpHandler,
 		);
 	}
 
@@ -221,6 +232,25 @@ final class Pkcs12HandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		fclose($invalidResource);
 	}
 
+	public function testGetCertificateChainWithCorruptedSignature(): void {
+		$handler = $this->getHandler();
+
+		$corruptedPdf = "%PDF-1.4\n"
+			. "1 0 obj<</Type/Sig/ByteRange [0 10 50 10]>>endobj\n"
+			. "ZZZZZZZZ\n" // Invalid hex data - will cause extraction to fail
+			. str_repeat('x', 100);
+
+		$resource = fopen('php://memory', 'r+');
+		fwrite($resource, $corruptedPdf);
+		rewind($resource);
+
+		$this->expectException(\OCA\Libresign\Exception\LibresignException::class);
+		$this->expectExceptionMessage('Unsigned file');
+		$handler->getCertificateChain($resource);
+
+		fclose($resource);
+	}
+
 	public function testRealWorldUsagePattern(): void {
 		$handler = $this->getHandler();
 
@@ -294,4 +324,52 @@ final class Pkcs12HandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->expectException(\OCA\Libresign\Exception\LibresignException::class);
 		$handler->getPfxOfCurrentSigner('test_user');
 	}
+
+	public function testGetCertificateChainWithAllFixtures(): void {
+		$handler = $this->getHandler();
+		$catalog = new PdfFixtureCatalog();
+
+		foreach ($catalog->getAll() as $fixture) {
+			if (!$fixture->shouldExtract()) {
+				continue;
+			}
+
+			$resource = $fixture->openResource();
+			$result = $handler->getCertificateChain($resource);
+			fclose($resource);
+
+			$this->assertCount($fixture->getSignatureCount(), $result, $fixture->getFilename());
+
+			foreach ($result as $signatureData) {
+				$this->assertArrayHasKey('chain', $signatureData);
+				$this->assertIsArray($signatureData['chain']);
+			}
+		}
+	}
+
+	public function testDocMdpPdfsExtraction(): void {
+		$handler = $this->getHandler();
+		$catalog = new PdfFixtureCatalog();
+		$docmdpFixtures = $catalog->getWithDocMdp();
+
+		$this->assertGreaterThan(0, count($docmdpFixtures));
+
+		foreach ($docmdpFixtures as $fixture) {
+			if (!$fixture->shouldExtract()) {
+				continue;
+			}
+
+			$resource = $fixture->openResource();
+			$result = $handler->getCertificateChain($resource);
+			fclose($resource);
+
+			$this->assertCount($fixture->getSignatureCount(), $result, $fixture->getFilename());
+
+			foreach ($result as $signatureData) {
+				$this->assertArrayHasKey('chain', $signatureData);
+				$this->assertGreaterThan(0, count($signatureData['chain']));
+			}
+		}
+	}
+
 }

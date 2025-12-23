@@ -8,6 +8,7 @@ declare(strict_types=1);
 
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Handler\FooterHandler;
+use OCA\Libresign\Handler\TemplateVariables;
 use OCA\Libresign\Service\PdfParserService;
 use OCP\IAppConfig;
 use OCP\IL10N;
@@ -26,15 +27,15 @@ final class FooterHandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private ITempManager $tempManager;
 	private FooterHandler $footerHandler;
 	public function setUp(): void {
-		$this->appConfig = $this->getMockAppConfig();
+		$this->appConfig = $this->getMockAppConfigWithReset();
 		$this->pdfParserService = $this->createMock(PdfParserService::class);
 		$this->urlGenerator = $this->createMock(IURLGenerator::class);
 		$this->tempManager = \OCP\Server::get(ITempManager::class);
-
 		$this->l10nFactory = \OCP\Server::get(IFactory::class);
 	}
 
 	private function getClass(): FooterHandler {
+		$templateVars = new TemplateVariables($this->l10n);
 		$this->footerHandler = new FooterHandler(
 			$this->appConfig,
 			$this->pdfParserService,
@@ -42,16 +43,18 @@ final class FooterHandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			$this->l10n,
 			$this->l10nFactory,
 			$this->tempManager,
+			$templateVars,
 		);
 		return $this->footerHandler;
 	}
 
 	public function testGetFooterWithoutValidationSite(): void {
 		$this->appConfig->setValueBool(Application::APP_ID, 'add_footer', false);
-		$file = $this->createMock(\OCP\Files\File::class);
-		$libresignFile = $this->createMock(\OCA\Libresign\Db\File::class);
+		$dimensions = [['w' => 595, 'h' => 842]];
 		$this->l10n = $this->l10nFactory->get(Application::APP_ID);
-		$actual = $this->getClass()->getFooter($file, $libresignFile);
+		$actual = $this->getClass()
+			->setTemplateVar('uuid', 'test-uuid')
+			->getFooter($dimensions);
 		$this->assertEmpty($actual);
 	}
 
@@ -68,27 +71,18 @@ final class FooterHandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 			}
 		}
 
-		$file = $this->createMock(\OCP\Files\File::class);
-		$libresignFile = $this->createMock(\OCA\Libresign\Db\File::class);
-		$libresignFile
-			->method('__call')
-			->willReturnCallback(fn ($key, $default): array|string => match ($key) {
-				'getMetadata' => [
-					'd' => [
-						[
-							'w' => 842,
-							'h' => 595,
-						],
-					],
-				],
-				'getUuid' => 'uuid',
-				default => '',
-			});
+		$dimensions = [
+			[
+				'w' => 842,
+				'h' => 595,
+			],
+		];
 
 		$this->l10n = $this->l10nFactory->get(Application::APP_ID, $language);
 
 		$pdf = $this->getClass()
-			->getFooter($file, $libresignFile);
+			->setTemplateVar('uuid', 'uuid')
+			->getFooter($dimensions);
 		if ($settings['add_footer']) {
 			$actual = $this->extractPdfContent(
 				$pdf,
@@ -244,5 +238,88 @@ final class FooterHandlerTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$content = array_filter($content, fn ($row) => in_array($row[$columnKey], $keys));
 		$this->assertNotEmpty($content, 'Fields not found at PDF file');
 		return array_column($content, $columnValue, $columnKey);
+	}
+
+	public function testGetFooterWithoutUuid(): void {
+		$this->appConfig->setValueBool(Application::APP_ID, 'add_footer', true);
+		$this->appConfig->setValueBool(Application::APP_ID, 'write_qrcode_on_footer', true);
+		$this->appConfig->setValueString(Application::APP_ID, 'footer_template', '<div>{{ signedBy|raw }}</div>');
+
+		$dimensions = [['w' => 595, 'h' => 100]];
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+
+		$pdf = $this->getClass()->getFooter($dimensions);
+		$this->assertNotEmpty($pdf);
+
+		$parser = new \Smalot\PdfParser\Parser();
+		$pdfParsed = $parser->parseContent($pdf);
+		$text = $pdfParsed->getText();
+		$this->assertNotEmpty($text);
+	}
+
+	public function testCustomValidationSiteNotOverwritten(): void {
+		$this->appConfig->setValueBool(Application::APP_ID, 'add_footer', true);
+		$this->appConfig->setValueString(Application::APP_ID, 'validation_site', 'https://default.site');
+		$this->appConfig->setValueString(Application::APP_ID, 'footer_template', '<div>{{ validationSite }}</div>');
+
+		$dimensions = [['w' => 595, 'h' => 100]];
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+
+		$pdf = $this->getClass()
+			->setTemplateVar('validationSite', 'https://custom.validation.site')
+			->getFooter($dimensions);
+
+		$this->assertNotEmpty($pdf);
+		$parser = new \Smalot\PdfParser\Parser();
+		$pdfParsed = $parser->parseContent($pdf);
+		$text = $pdfParsed->getText();
+		$this->assertStringContainsString('https://custom.validation.site', $text);
+		$this->assertStringNotContainsString('https://default.site', $text);
+	}
+
+	public function testGetTemplateReturnsCustomTemplate(): void {
+		$customTemplate = '<div>Custom footer template {{ uuid }}</div>';
+		$this->appConfig->setValueString(Application::APP_ID, 'footer_template', $customTemplate);
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+
+		$template = $this->getClass()->getTemplate();
+
+		$this->assertSame($customTemplate, $template);
+	}
+
+	public function testGetTemplateReturnsDefaultWhenNotSet(): void {
+		$this->appConfig->deleteKey(Application::APP_ID, 'footer_template');
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+
+		$template = $this->getClass()->getTemplate();
+
+		$defaultTemplate = file_get_contents(__DIR__ . '/../../../../lib/Handler/Templates/footer.twig');
+		$this->assertNotEmpty($template);
+		$this->assertSame($defaultTemplate, $template);
+	}
+
+	public function testGetTemplateReturnsDefaultWhenEmpty(): void {
+		$this->appConfig->setValueString(Application::APP_ID, 'footer_template', '');
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+
+		$template = $this->getClass()->getTemplate();
+
+		$this->assertNotEmpty($template);
+		$defaultTemplate = file_get_contents(__DIR__ . '/../../../../lib/Handler/Templates/footer.twig');
+		$this->assertSame($defaultTemplate, $template);
+	}
+
+	public function testGetTemplateVariablesMetadata(): void {
+		$this->l10n = $this->l10nFactory->get(Application::APP_ID, 'en');
+		$metadata = $this->getClass()->getTemplateVariablesMetadata();
+
+		$this->assertIsArray($metadata);
+		$this->assertCount(9, $metadata);
+		$this->assertArrayHasKey('direction', $metadata);
+		$this->assertArrayHasKey('uuid', $metadata);
+		$this->assertArrayHasKey('signedBy', $metadata);
+		$this->assertSame('string', $metadata['direction']['type']);
+		$this->assertSame('string', $metadata['uuid']['type']);
+		$this->assertArrayHasKey('default', $metadata['signedBy']);
 	}
 }

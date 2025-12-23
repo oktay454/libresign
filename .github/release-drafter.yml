@@ -1,32 +1,73 @@
-# SPDX-FileCopyrightText: 2020-2024 LibreCode coop and contributors
+# SPDX-FileCopyrightText: 2020-2025 LibreCode coop and contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-name-template: 'v$RESOLVED_VERSION'
-tag-template: 'v$RESOLVED_VERSION'
+name-template: 'v${{ env.VERSION_PREFIX }}$RESOLVED_VERSION'
+tag-template: 'v${{ env.VERSION_PREFIX }}$RESOLVED_VERSION'
 
 categories:
-  - title: '🚀 Features'
+  - title: 'Added'
     labels:
       - 'feature'
       - 'feat'
-  - title: '🐛 Bug Fixes'
+      - 'enhancement'
+
+  - title: 'Changed'
+    labels:
+      - 'chore'
+      - 'refactor'
+      - 'improvement'
+
+  - title: 'Fixed'
     labels:
       - 'fix'
       - 'bugfix'
       - 'bug'
-  - title: '🛠️ Changes'
+
+  - title: 'Removed'
     labels:
-      - 'chore'
-      - 'refactor'
-      - 'docs'
-  - title: '📦 Dependencies'
+      - 'removed'
+      - 'deprecated'
+
+  - title: 'Security'
     labels:
-      - 'dependencies'
-  - title: '🧪 Tests'
+      - 'security'
+
+  - title: 'Tests'
     labels:
       - 'test'
 
+  - title: 'Dependencies'
+    labels:
+      - 'dependencies'
+
+  - title: 'Documentation'
+    labels:
+      - 'docs'
+
+  - title: 'Other'
+    labels: []
+
 change-template: '- $TITLE [#$NUMBER]($URL)'
+
+autolabeler:
+  - label: 'fix'
+    title:
+      - '/^fix/i'
+  - label: 'feature'
+    title:
+      - '/^feat/i'
+  - label: 'chore'
+    title:
+      - '/^chore/i'
+  - label: 'docs'
+    title:
+      - '/^docs/i'
+  - label: 'refactor'
+    title:
+      - '/^refactor/i'
+  - label: 'test'
+    title:
+      - '/^test/i'
 
 version-resolver:
   major:
@@ -41,9 +82,8 @@ version-resolver:
   default: patch
 
 template: |
-  ## What’s Changed
+  ## $RESOLVED_VERSION - $DATE
 
   $CHANGES
 
-  Milestone: $RESOLVED_VERSION
-  **Full Changelog**: https://github.com/LibreSign/libresign/compare/$PREVIOUS_TAG...$NEXT_TAG
+  **Full Changelog:** https://github.com/LibreSign/libresign/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

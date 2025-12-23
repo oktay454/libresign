@@ -16,7 +16,8 @@ class CfsslServerHandler {
 	private string $csrServerFile = '';
 	private string $configServerFile = '';
 	private string $configServerFileHash = '';
-	private Closure $getConfigPath;
+	private string $crlUrl = '';
+	private Closure $getCurrentConfigPath;
 
 	public function __construct(
 		private CertificatePolicyService $certificatePolicyService,
@@ -29,8 +30,8 @@ class CfsslServerHandler {
 	 * try to create the config path if not exists.
 	 */
 	public function configCallback(Closure $callback): void {
-		$this->getConfigPath = $callback;
-		$this->getConfigPath = function () use ($callback): void {
+		$this->getCurrentConfigPath = $callback;
+		$this->getCurrentConfigPath = function () use ($callback): void {
 			if ($this->csrServerFile) {
 				return;
 			}
@@ -44,19 +45,24 @@ class CfsslServerHandler {
 	public function createConfigServer(
 		string $commonName,
 		array $names,
-		string $key,
-		int $expirity,
+		int $expirityInDays,
+		string $crlUrl = '',
 	): void {
+		$this->crlUrl = $crlUrl;
 		$this->putCsrServer(
 			$commonName,
 			$names,
+			$expirityInDays,
+			$crlUrl,
 		);
-		$this->saveNewConfig($key, $expirity);
+		$this->saveNewConfig($expirityInDays);
 	}
 
 	private function putCsrServer(
 		string $commonName,
 		array $names,
+		int $expirityInDays,
+		string $crlUrl,
 	): void {
 		$content = [
 			'CN' => $commonName,
@@ -64,11 +70,24 @@ class CfsslServerHandler {
 				'algo' => 'rsa',
 				'size' => 2048,
 			],
+			'ca' => [
+				'expiry' => ($expirityInDays * 24) . 'h',
+				/**
+				 * Look the RFC about pathlen constraint
+				 *
+				 * @link https://www.rfc-editor.org/rfc/rfc5280#section-4.2.1.9
+				 */
+				'pathlen' => 1,
+			],
+			'names' => [],
 		];
-		foreach ($names as $id => $name) {
-			$content['names'][0][$id] = $name['value'];
+		if (!empty($crlUrl)) {
+			$content['crl_url'] = $crlUrl;
 		}
-		($this->getConfigPath)();
+		foreach ($names as $id => $name) {
+			$content['names'][0][$id] = is_array($name['value']) ? implode(', ', $name['value']) : $name['value'];
+		}
+		($this->getCurrentConfigPath)();
 		$response = file_put_contents($this->csrServerFile, json_encode($content));
 		if ($response === false) {
 			throw new LibresignException(
@@ -78,36 +97,36 @@ class CfsslServerHandler {
 			);
 		}
 	}
-
-	private function saveNewConfig(string $key, int $expirity): void {
+	private function saveNewConfig(int $expirity): void {
 		$config = [
 			'signing' => [
 				'profiles' => [
-					'CA' => [
-						'auth_key' => 'key1',
+					'client' => [
 						'expiry' => ($expirity * 24) . 'h',
 						'usages' => [
 							'signing',
 							'digital signature',
-							'cert sign',
+							'content commitment',
 							'key encipherment',
 							'client auth',
 							'email protection'
 						],
+						'ca_constraint' => [
+							'is_ca' => false
+						],
 					],
 				],
 			],
-			'auth_keys' => [
-				'key1' => [
-					'key' => $key,
-					'type' => 'standard',
-				],
-			],
 		];
+
+		if (!empty($this->crlUrl)) {
+			$config['signing']['profiles']['client']['crl_url'] = $this->crlUrl;
+		}
+
 		$oid = $this->certificatePolicyService->getOid();
 		$cps = $this->certificatePolicyService->getCps();
 		if ($oid && $cps) {
-			$config['signing']['profiles']['CA']['policies'][] = [
+			$config['signing']['profiles']['client']['policies'][] = [
 				'id' => $oid,
 				'qualifiers' => [
 					[
@@ -122,7 +141,7 @@ class CfsslServerHandler {
 
 	private function saveConfig(array $config): void {
 		$jsonConfig = json_encode($config);
-		($this->getConfigPath)();
+		($this->getCurrentConfigPath)();
 		$response = file_put_contents($this->configServerFile, $jsonConfig);
 		if ($response === false) {
 			throw new LibresignException('Error while writing config server file!', 500);
@@ -132,7 +151,7 @@ class CfsslServerHandler {
 	}
 
 	public function updateExpirity(int $expirity): void {
-		($this->getConfigPath)();
+		($this->getCurrentConfigPath)();
 		if (file_exists($this->configServerFileHash)) {
 			$hashes = file_get_contents($this->configServerFileHash);
 			preg_match('/(?<hash>\w*) +config_server.json/', $hashes, $matches);
@@ -147,6 +166,7 @@ class CfsslServerHandler {
 		}
 		$config = json_decode($jsonConfig, true);
 		$config['signing']['profiles']['CA']['expiry'] = ($expirity * 24) . 'h';
+		$config['signing']['profiles']['client']['expiry'] = ($expirity * 24) . 'h';
 		$this->saveConfig($config);
 	}
 }

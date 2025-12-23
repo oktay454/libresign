@@ -10,7 +10,7 @@ namespace OCA\Libresign\Command\Developer;
 
 use OC\Core\Command\Base;
 use OCA\Libresign\AppInfo\Application;
-use OCP\DB\QueryBuilder\IQueryBuilder;
+use OCP\IAppConfig;
 use OCP\IConfig;
 use OCP\IDBConnection;
 use Psr\Log\LoggerInterface;
@@ -21,6 +21,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 class Reset extends Base {
 	public function __construct(
 		private IConfig $config,
+		private IAppConfig $appConfig,
 		private IDBConnection $db,
 		private LoggerInterface $logger,
 	) {
@@ -78,6 +79,12 @@ class Reset extends Base {
 				description: 'Reset file element'
 			)
 			->addOption(
+				name: 'crl',
+				shortcut: null,
+				mode: InputOption::VALUE_NONE,
+				description: 'Reset crl',
+			)
+			->addOption(
 				name: 'userelement',
 				shortcut: null,
 				mode: InputOption::VALUE_NONE,
@@ -119,6 +126,10 @@ class Reset extends Base {
 			}
 			if ($input->getOption('fileelement') || $all) {
 				$this->resetFileElement();
+				$ok = true;
+			}
+			if ($input->getOption('crl') || $all) {
+				$this->resetCrl();
 				$ok = true;
 			}
 			if ($input->getOption('userelement') || $all) {
@@ -213,6 +224,15 @@ class Reset extends Base {
 		}
 	}
 
+	private function resetCrl(): void {
+		try {
+			$delete = $this->db->getQueryBuilder();
+			$delete->delete('libresign_crl')
+				->executeStatement();
+		} catch (\Throwable) {
+		}
+	}
+
 	private function resetUserElement(): void {
 		try {
 			$delete = $this->db->getQueryBuilder();
@@ -224,11 +244,13 @@ class Reset extends Base {
 
 	private function resetConfig(): void {
 		try {
-			$delete = $this->db->getQueryBuilder();
-			$delete->delete('appconfig')
-				->where($delete->expr()->eq('appid', $delete->createNamedParameter(Application::APP_ID)))
-				->andWhere($delete->expr()->notIn('configkey', $delete->createNamedParameter(['enabled', 'installed_version'], IQueryBuilder::PARAM_STR_ARRAY)))
-				->executeStatement();
+			$keys = $this->appConfig->getKeys(Application::APP_ID);
+			foreach ($keys as $key) {
+				if ($key === 'enabled' || $key === 'installed_version') {
+					continue;
+				}
+				$this->appConfig->deleteKey(Application::APP_ID, $key);
+			}
 		} catch (\Throwable) {
 		}
 	}

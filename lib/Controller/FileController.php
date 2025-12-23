@@ -12,6 +12,7 @@ use InvalidArgumentException;
 use OCA\Files_Sharing\SharedStorage;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Db\File as FileEntity;
+use OCA\Libresign\Db\FileMapper;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Helper\JSActions;
@@ -62,6 +63,7 @@ class FileController extends AEnvironmentAwareController {
 		private IUserSession $userSession,
 		private SessionService $sessionService,
 		private SignRequestMapper $signRequestMapper,
+		private FileMapper $fileMapper,
 		private IdentifyMethodService $identifyMethodService,
 		private RequestSignatureService $requestSignatureService,
 		private AccountService $accountService,
@@ -233,10 +235,10 @@ class FileController extends AEnvironmentAwareController {
 	}
 
 	/**
-	 * List account files that need to be approved
+	 * List identification documents that need to be approved
 	 *
 	 * @param string|null $signer_uuid Signer UUID
-	 * @param string|null $nodeId The nodeId (also called fileId). Is the id of a file at Nextcloud
+	 * @param list<string>|null $nodeIds The list of nodeIds (also called fileIds). It's the ids of files at Nextcloud
 	 * @param list<int>|null $status Status could be none or many of 0 = draft, 1 = able to sign, 2 = partial signed, 3 = signed, 4 = deleted.
 	 * @param int|null $page the number of page to return
 	 * @param int|null $length Total of elements to return
@@ -255,7 +257,7 @@ class FileController extends AEnvironmentAwareController {
 		?int $page = null,
 		?int $length = null,
 		?string $signer_uuid = null,
-		?string $nodeId = null,
+		?array $nodeIds = null,
 		?array $status = null,
 		?int $start = null,
 		?int $end = null,
@@ -264,7 +266,7 @@ class FileController extends AEnvironmentAwareController {
 	): DataResponse {
 		$filter = array_filter([
 			'signer_uuid' => $signer_uuid,
-			'nodeId' => $nodeId,
+			'nodeIds' => $nodeIds,
 			'status' => $status,
 			'start' => $start,
 			'end' => $end,
@@ -273,9 +275,24 @@ class FileController extends AEnvironmentAwareController {
 			'sortBy' => $sortBy,
 			'sortDirection' => $sortDirection,
 		];
-		$return = $this->fileService
-			->setMe($this->userSession->getUser())
-			->listAssociatedFilesOfSignFlow($page, $length, $filter, $sort);
+
+		$user = $this->userSession->getUser();
+		$this->fileService->setMe($user);
+		$return = $this->fileService->listAssociatedFilesOfSignFlow($page, $length, $filter, $sort);
+
+		if ($user && !empty($return['data'])) {
+			$firstFile = $return['data'][0];
+			$fileSettings = $this->fileService
+				->setFileByType('FileId', $firstFile['nodeId'])
+				->showSettings()
+				->toArray();
+
+			$return['settings'] = [
+				'needIdentificationDocuments' => $fileSettings['settings']['needIdentificationDocuments'] ?? false,
+				'identificationDocumentsWaitingApproval' => $fileSettings['settings']['identificationDocumentsWaitingApproval'] ?? false,
+			];
+		}
+
 		return new DataResponse($return, Http::STATUS_OK);
 	}
 
@@ -423,16 +440,16 @@ class FileController extends AEnvironmentAwareController {
 				'userManager' => $this->userSession->getUser(),
 				'status' => FileEntity::STATUS_DRAFT,
 			];
-			$this->requestSignatureService->save($data);
+			$file = $this->requestSignatureService->save($data);
 
 			return new DataResponse(
 				[
 					'message' => $this->l10n->t('Success'),
 					'name' => $name,
 					'id' => $node->getId(),
-					'etag' => $node->getEtag(),
-					'path' => $node->getPath(),
-					'type' => $node->getType(),
+					'status' => $file->getStatus(),
+					'statusText' => $this->fileMapper->getTextOfStatus($file->getStatus()),
+					'created_at' => $file->getCreatedAt()->format(\DateTimeInterface::ATOM),
 				],
 				Http::STATUS_OK
 			);

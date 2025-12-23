@@ -136,6 +136,8 @@ abstract class SignEngineHandler implements ISignEngineHandler {
 				->setUID($user['uid'])
 				->setPassword($signPassword)
 				->generateCertificate();
+		} catch (LibresignException $e) {
+			throw $e;
 		} catch (EmptyCertificateException) {
 			throw new LibresignException($this->l10n->t('Empty root certificate data'));
 		} catch (InvalidArgumentException) {
@@ -255,8 +257,12 @@ abstract class SignEngineHandler implements ISignEngineHandler {
 		return $stream;
 	}
 
-	private function getCertificateEngine(): IEngineHandler {
+	protected function getCertificateEngine(): IEngineHandler {
 		return \OCP\Server::get(CertificateEngineFactory::class)
 			->getEngine();
+	}
+
+	protected function beforeSign(): void {
+		$this->getCertificateEngine()->validateRootCertificate();
 	}
 }

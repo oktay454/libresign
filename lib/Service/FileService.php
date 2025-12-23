@@ -17,10 +17,12 @@ use OCA\Libresign\Db\File;
 use OCA\Libresign\Db\FileElement;
 use OCA\Libresign\Db\FileElementMapper;
 use OCA\Libresign\Db\FileMapper;
+use OCA\Libresign\Db\IdDocsMapper;
 use OCA\Libresign\Db\IdentifyMethod;
 use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Exception\LibresignException;
+use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
 use OCA\Libresign\Helper\ValidateHelper;
 use OCA\Libresign\ResponseDefinitions;
@@ -53,6 +55,7 @@ class FileService {
 	private bool $showMessages = false;
 	private bool $validateFile = false;
 	private bool $signersLibreSignLoaded = false;
+	private bool $signerIdentified = false;
 	private string $fileContent = '';
 	private string $host = '';
 	private ?File $file = null;
@@ -73,6 +76,7 @@ class FileService {
 		protected FolderService $folderService,
 		protected ValidateHelper $validateHelper,
 		protected PdfParserService $pdfParserService,
+		private IdDocsMapper $idDocsMapper,
 		private AccountService $accountService,
 		private IdentifyMethodService $identifyMethodService,
 		private IUserSession $userSession,
@@ -84,10 +88,12 @@ class FileService {
 		private IURLGenerator $urlGenerator,
 		protected IMimeTypeDetector $mimeTypeDetector,
 		protected Pkcs12Handler $pkcs12Handler,
+		DocMdpHandler $docMdpHandler,
 		private IRootFolder $root,
 		protected LoggerInterface $logger,
 		protected IL10N $l10n,
 	) {
+		$this->docMdpHandler = $docMdpHandler;
 		$this->fileData = new stdClass();
 	}
 
@@ -138,6 +144,11 @@ class FileService {
 	 */
 	public function setMe(?IUser $user): self {
 		$this->me = $user;
+		return $this;
+	}
+
+	public function setSignerIdentified(bool $identified = true): self {
+		$this->signerIdentified = $identified;
 		return $this;
 	}
 
@@ -249,6 +260,19 @@ class FileService {
 		return $fileToValidate;
 	}
 
+	public function getStatus(): int {
+		return $this->file->getStatus();
+	}
+
+	public function getSignedNodeId(): ?int {
+		$status = $this->file->getStatus();
+
+		if (!in_array($status, [File::STATUS_PARTIAL_SIGNED, File::STATUS_SIGNED])) {
+			return null;
+		}
+		return $this->file->getSignedNodeId();
+	}
+
 	private function getFileContent(): string {
 		if ($this->fileContent) {
 			return $this->fileContent;
@@ -256,12 +280,24 @@ class FileService {
 			try {
 				return $this->fileContent = $this->getFile()->getContent();
 			} catch (LibresignException $e) {
-				throw new LibresignException($e->getMessage(), 404);
-			} catch (\Throwable) {
-				throw new LibresignException($this->l10n->t('Invalid data to validate file'), 404);
+				throw $e;
+			} catch (\Throwable $e) {
+				$this->logger->error('Failed to get file content: ' . $e->getMessage(), [
+					'fileId' => $this->file->getId(),
+					'exception' => $e,
+				]);
+				throw new LibresignException($this->l10n->t('Invalid data to validate file'), 404, $e);
 			}
 		}
 		return '';
+	}
+
+	public function isLibresignFile(int $nodeId): bool {
+		try {
+			return $this->fileMapper->fileIdExists($nodeId);
+		} catch (\Throwable) {
+			throw new LibresignException($this->l10n->t('Invalid data to validate file'), 404);
+		}
 	}
 
 	private function loadFileMetadata(): void {
@@ -271,6 +307,7 @@ class FileService {
 		$pdfParserService = $this->pdfParserService->setFile($content);
 		if ($this->file) {
 			$metadata = $this->file->getMetadata();
+			$this->fileData->metadata = $metadata;
 		}
 		if (isset($metadata) && isset($metadata['p'])) {
 			$dimensions = $metadata;
@@ -289,8 +326,21 @@ class FileService {
 		$file = $this->getFile();
 
 		$resource = $file->fopen('rb');
+		$sha256 = $this->getSha256FromResource($resource);
+		if ($sha256 === $this->file->getSignedHash()) {
+			$this->pkcs12Handler->setIsLibreSignFile();
+		}
 		$this->certData = $this->pkcs12Handler->getCertificateChain($resource);
 		fclose($resource);
+	}
+
+	private function getSha256FromResource($resource): string {
+		$hashContext = hash_init('sha256');
+		while (!feof($resource)) {
+			$buffer = fread($resource, 8192); // 8192 bytes = 8 KB
+			hash_update($hashContext, $buffer);
+		}
+		return hash_final($hashContext);
 	}
 
 	private function loadLibreSignSigners(): void {
@@ -338,6 +388,9 @@ class FileService {
 			$this->fileData->signers[$index]['me'] = false;
 			$this->fileData->signers[$index]['signRequestId'] = $signer->getId();
 			$this->fileData->signers[$index]['description'] = $signer->getDescription();
+			$this->fileData->signers[$index]['status'] = $signer->getStatus();
+			$this->fileData->signers[$index]['statusText'] = $this->signRequestMapper->getTextOfSignerStatus($signer->getStatus());
+			$this->fileData->signers[$index]['signingOrder'] = $signer->getSigningOrder();
 			$this->fileData->signers[$index]['visibleElements'] = $this->getVisibleElements($signer->getId());
 			$this->fileData->signers[$index]['request_sign_date'] = $signer->getCreatedAt()->format(DateTimeInterface::ATOM);
 			if (empty($this->fileData->signers[$index]['signed'])) {
@@ -419,87 +472,117 @@ class FileService {
 			}, []);
 			ksort($this->fileData->signers[$index]);
 		}
+
+		usort($this->fileData->signers, function ($a, $b) {
+			$orderA = $a['signingOrder'] ?? PHP_INT_MAX;
+			$orderB = $b['signingOrder'] ?? PHP_INT_MAX;
+
+			if ($orderA !== $orderB) {
+				return $orderA <=> $orderB;
+			}
+
+			return ($a['signRequestId'] ?? 0) <=> ($b['signRequestId'] ?? 0);
+		});
+
 		$this->signersLibreSignLoaded = true;
 	}
 
 	private function loadSignersFromCertData(): void {
 		$this->loadCertDataFromLibreSignFile();
 		foreach ($this->certData as $index => $signer) {
-			if (!empty($signer['chain'][0]['name'])) {
-				$this->fileData->signers[$index]['subject'] = $signer['chain'][0]['name'];
+			$this->fileData->signers[$index]['status'] = 2;
+			$this->fileData->signers[$index]['statusText'] = $this->signRequestMapper->getTextOfSignerStatus(2);
+
+			if (isset($signer['timestamp'])) {
+				$this->fileData->signers[$index]['timestamp'] = $signer['timestamp'];
+				if (isset($signer['timestamp']['genTime']) && $signer['timestamp']['genTime'] instanceof DateTimeInterface) {
+					$this->fileData->signers[$index]['timestamp']['genTime'] = $signer['timestamp']['genTime']->format(DateTimeInterface::ATOM);
+				}
 			}
-			if (!empty($signer['chain'][0]['validFrom_time_t'])) {
-				$this->fileData->signers[$index]['valid_from'] = (new DateTime('@' . $signer['chain'][0]['validFrom_time_t'], new \DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
-			}
-			if (!empty($signer['chain'][0]['validTo_time_t'])) {
-				$this->fileData->signers[$index]['valid_to'] = (new DateTime('@' . $signer['chain'][0]['validTo_time_t'], new \DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
-			}
-			if (!empty($signer['signingTime'])) {
+			if (isset($signer['signingTime']) && $signer['signingTime'] instanceof DateTimeInterface) {
+				$this->fileData->signers[$index]['signingTime'] = $signer['signingTime'];
 				$this->fileData->signers[$index]['signed'] = $signer['signingTime']->format(DateTimeInterface::ATOM);
 			}
-			$this->fileData->signers[$index]['signature_validation'] = $signer['chain'][0]['signature_validation'];
-			if (!empty($signer['chain'][0]['certificate_validation'])) {
-				$this->fileData->signers[$index]['certificate_validation'] = $signer['chain'][0]['certificate_validation'];
+			if (isset($signer['docmdp'])) {
+				$this->fileData->signers[$index]['docmdp'] = $signer['docmdp'];
 			}
-			if (!empty($signer['chain'][0]['signatureTypeSN'])) {
-				$this->fileData->signers[$index]['hash_algorithm'] = $signer['chain'][0]['signatureTypeSN'];
+			if (isset($signer['modifications'])) {
+				$this->fileData->signers[$index]['modifications'] = $signer['modifications'];
 			}
-			if (!empty($signer['chain'][0]['subject']['UID'])) {
-				$this->fileData->signers[$index]['uid'] = $signer['chain'][0]['subject']['UID'];
-			} elseif (!empty($signer['chain'][0]['subject']['CN']) && preg_match('/^(?<key>.*):(?<value>.*), /', (string)$signer['chain'][0]['subject']['CN'], $matches)) {
-				// Used by CFSSL
-				$this->fileData->signers[$index]['uid'] = $matches['key'] . ':' . $matches['value'];
-			} elseif (!empty($signer['chain'][0]['extensions']['subjectAltName'])) {
-				// Used by old certs of LibreSign
-				preg_match('/^(?<key>(email|account)):(?<value>.*)$/', (string)$signer['chain'][0]['extensions']['subjectAltName'], $matches);
-				if ($matches) {
-					if (str_ends_with($matches['value'], $this->host)) {
-						$uid = str_replace('@' . $this->host, '', $matches['value']);
-						$userFound = $this->userManager->get($uid);
-						if ($userFound) {
-							$this->fileData->signers[$index]['uid'] = 'account:' . $uid;
-						} else {
-							$userFound = $this->userManager->getByEmail($matches['value']);
-							if ($userFound) {
-								$userFound = current($userFound);
-								$this->fileData->signers[$index]['uid'] = 'account:' . $userFound->getUID();
-							} else {
-								$this->fileData->signers[$index]['uid'] = 'email:' . $matches['value'];
-							}
-						}
+			if (isset($signer['modification_validation'])) {
+				$this->fileData->signers[$index]['modification_validation'] = $signer['modification_validation'];
+			}
+			if (isset($signer['chain'])) {
+				foreach ($signer['chain'] as $chainIndex => $chainItem) {
+					$chainArr = $chainItem;
+					if (isset($chainItem['validFrom_time_t']) && is_numeric($chainItem['validFrom_time_t'])) {
+						$chainArr['valid_from'] = (new DateTime('@' . $chainItem['validFrom_time_t'], new \DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
+					}
+					if (isset($chainItem['validTo_time_t']) && is_numeric($chainItem['validTo_time_t'])) {
+						$chainArr['valid_to'] = (new DateTime('@' . $chainItem['validTo_time_t'], new \DateTimeZone('UTC')))->format(DateTimeInterface::ATOM);
+					}
+					$chainArr['displayName'] = $chainArr['name'] ?? ($chainArr['subject']['CN'] ?? '');
+					$this->fileData->signers[$index]['chain'][$chainIndex] = $chainArr;
+					if ($chainIndex === 0) {
+						$this->fileData->signers[$index] = array_merge($chainArr, $this->fileData->signers[$index] ?? []);
+						$this->fileData->signers[$index]['uid'] = $this->resolveUid($chainArr);
+					}
+				}
+			}
+		}
+	}
+
+	private function resolveUid(array $chainArr): ?string {
+		if (!empty($chainArr['subject']['UID'])) {
+			return $chainArr['subject']['UID'];
+		}
+		if (!empty($chainArr['subject']['CN'])) {
+			$cn = $chainArr['subject']['CN'];
+			if (is_array($cn)) {
+				$cn = $cn[0];
+			}
+			if (preg_match('/^(?<key>.*):(?<value>.*), /', (string)$cn, $matches)) {
+				return $matches['key'] . ':' . $matches['value'];
+			}
+		}
+		if (!empty($chainArr['extensions']['subjectAltName'])) {
+			$subjectAltName = $chainArr['extensions']['subjectAltName'];
+			if (is_array($subjectAltName)) {
+				$subjectAltName = $subjectAltName[0];
+			}
+			preg_match('/^(?<key>(email|account)):(?<value>.*)$/', (string)$subjectAltName, $matches);
+			if ($matches) {
+				if (str_ends_with($matches['value'], $this->host)) {
+					$uid = str_replace('@' . $this->host, '', $matches['value']);
+					$userFound = $this->userManager->get($uid);
+					if ($userFound) {
+						return 'account:' . $uid;
 					} else {
 						$userFound = $this->userManager->getByEmail($matches['value']);
 						if ($userFound) {
 							$userFound = current($userFound);
-							$this->fileData->signers[$index]['uid'] = 'account:' . $userFound->getUID();
+							return 'account:' . $userFound->getUID();
 						} else {
-							$userFound = $this->userManager->get($matches['value']);
-							if ($userFound) {
-								$this->fileData->signers[$index]['uid'] = 'account:' . $userFound->getUID();
-							} else {
-								$this->fileData->signers[$index]['uid'] = $matches['key'] . ':' . $matches['value'];
-							}
+							return 'email:' . $matches['value'];
+						}
+					}
+				} else {
+					$userFound = $this->userManager->getByEmail($matches['value']);
+					if ($userFound) {
+						$userFound = current($userFound);
+						return 'account:' . $userFound->getUID();
+					} else {
+						$userFound = $this->userManager->get($matches['value']);
+						if ($userFound) {
+							return 'account:' . $userFound->getUID();
+						} else {
+							return $matches['key'] . ':' . $matches['value'];
 						}
 					}
 				}
 			}
-			if (!empty($signer['chain'][0]['subject']['CN'])) {
-				$this->fileData->signers[$index]['displayName'] = $signer['chain'][0]['subject']['CN'];
-			} elseif (!empty($this->fileData->signers[$index]['uid'])) {
-				$this->fileData->signers[$index]['displayName'] = $this->fileData->signers[$index]['uid'];
-			}
-			if (!empty($signer['timestamp'])) {
-				$this->fileData->signers[$index]['timestamp'] = $signer['timestamp'];
-				if ($signer['timestamp']['genTime'] instanceof \DateTimeInterface) {
-					$this->fileData->signers[$index]['timestamp']['genTime'] = $signer['timestamp']['genTime']->format(DateTimeInterface::ATOM);
-				}
-			}
-			for ($i = 1; $i < count($signer['chain']); $i++) {
-				$this->fileData->signers[$index]['chain'][] = [
-					'displayName' => $signer['chain'][$i]['name'],
-				];
-			}
 		}
+		return null;
 	}
 
 	private function loadSigners(): void {
@@ -578,7 +661,9 @@ class FileService {
 		if ($this->me) {
 			$this->fileData->settings = array_merge($this->fileData->settings, $this->accountService->getSettings($this->me));
 			$this->fileData->settings['phoneNumber'] = $this->getPhoneNumber();
-			$status = $this->getIdentificationDocumentsStatus($this->me->getUID());
+		}
+		if ($this->signerIdentified || $this->me) {
+			$status = $this->getIdentificationDocumentsStatus();
 			if ($status === self::IDENTIFICATION_DOCUMENTS_NEED_SEND) {
 				$this->fileData->settings['needIdentificationDocuments'] = true;
 				$this->fileData->settings['identificationDocumentsWaitingApproval'] = false;
@@ -589,14 +674,18 @@ class FileService {
 		}
 	}
 
-	public function getIdentificationDocumentsStatus(?string $userId): int {
+	public function getIdentificationDocumentsStatus(string $userId = ''): int {
 		if (!$this->appConfig->getValueBool(Application::APP_ID, 'identification_documents', false)) {
 			return self::IDENTIFICATION_DOCUMENTS_DISABLED;
 		}
 
+		if (!$userId && $this->me instanceof IUser) {
+			$userId = $this->me->getUID();
+		}
 		if (!empty($userId)) {
 			$files = $this->fileMapper->getFilesOfAccount($userId);
 		}
+
 		if (empty($files) || !count($files)) {
 			return self::IDENTIFICATION_DOCUMENTS_NEED_SEND;
 		}
@@ -623,6 +712,8 @@ class FileService {
 		$this->fileData->created_at = $this->file->getCreatedAt()->format(DateTimeInterface::ATOM);
 		$this->fileData->statusText = $this->fileMapper->getTextOfStatus($this->file->getStatus());
 		$this->fileData->nodeId = $this->file->getNodeId();
+		$this->fileData->signatureFlow = $this->file->getSignatureFlow();
+		$this->fileData->docmdpLevel = $this->file->getDocmdpLevel();
 
 		$this->fileData->requested_by = [
 			'userId' => $this->file->getUserId(),
@@ -751,6 +842,9 @@ class FileService {
 						'request_sign_date' => $signer->getCreatedAt()->format(DateTimeInterface::ATOM),
 						'signed' => null,
 						'signRequestId' => $signer->getId(),
+						'signingOrder' => $signer->getSigningOrder(),
+						'status' => $signer->getStatus(),
+						'statusText' => $this->signRequestMapper->getTextOfSignerStatus($signer->getStatus()),
 						'me' => array_reduce($identifyMethodsOfSigner, function (bool $carry, IdentifyMethod $identifyMethod) use ($user): bool {
 							if ($identifyMethod->getIdentifierKey() === IdentifyMethodService::IDENTIFY_ACCOUNT) {
 								if ($user->getUID() === $identifyMethod->getIdentifierValue()) {
@@ -818,6 +912,17 @@ class FileService {
 				$files[$key]['signers'] = [];
 				$files[$key]['statusText'] = $this->l10n->t('no signers');
 			} else {
+				usort($files[$key]['signers'], function ($a, $b) {
+					$orderA = $a['signingOrder'] ?? PHP_INT_MAX;
+					$orderB = $b['signingOrder'] ?? PHP_INT_MAX;
+
+					if ($orderA !== $orderB) {
+						return $orderA <=> $orderB;
+					}
+
+					return ($a['signRequestId'] ?? 0) <=> ($b['signRequestId'] ?? 0);
+				});
+
 				$files[$key]['statusText'] = $this->fileMapper->getTextOfStatus((int)$files[$key]['status']);
 			}
 			unset($files[$key]['id']);
@@ -873,6 +978,7 @@ class FileService {
 		foreach ($list as $signRequest) {
 			$this->signRequestMapper->delete($signRequest);
 		}
+		$this->idDocsMapper->deleteByFileId($file->getId());
 		$this->fileMapper->delete($file);
 		if ($file->getSignedNodeId()) {
 			$signedNextcloudFile = $this->folderService->getFileById($file->getSignedNodeId());

@@ -13,6 +13,7 @@ use OCA\Libresign\Db\SignRequest;
 use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Events\SendSignNotificationEvent;
 use OCA\Libresign\Events\SignedEvent;
+use OCA\Libresign\Events\SignRequestCanceledEvent;
 use OCA\Libresign\Service\IdentifyMethod\IdentifyService;
 use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
 use OCA\Libresign\Service\MailService;
@@ -37,7 +38,7 @@ class MailNotifyListener implements IEventListener {
 
 	#[\Override]
 	public function handle(Event $event): void {
-		/** @var SendSignNotificationEvent|SignedEvent $event */
+		/** @var SendSignNotificationEvent|SignedEvent|SignRequestCanceledEvent $event */
 		match ($event::class) {
 			SendSignNotificationEvent::class => $this->sendSignMailNotification(
 				$event->getSignRequest(),
@@ -48,6 +49,11 @@ class MailNotifyListener implements IEventListener {
 				$event->getIdentifyMethod(),
 				$event->getLibreSignFile(),
 				$event->getUser(),
+			),
+			SignRequestCanceledEvent::class => $this->sendCanceledMailNotification(
+				$event->getSignRequest(),
+				$event->getIdentifyMethod(),
+				$event->getLibreSignFile(),
 			),
 		};
 	}
@@ -60,13 +66,11 @@ class MailNotifyListener implements IEventListener {
 			if ($identifyMethod->getEntity()->isDeletedAccount()) {
 				return;
 			}
-			if ($this->isNotificationDisabledAtActivity($identifyMethod->getEntity()->getIdentifierValue(), SendSignNotificationEvent::FILE_TO_SIGN)) {
-				return;
-			}
 			$email = '';
 			if ($identifyMethod->getName() === 'account') {
+				$userId = $identifyMethod->getEntity()->getIdentifierValue();
 				$email = $this->userManager
-					->get($identifyMethod->getEntity()->getIdentifierValue())
+					->get($userId)
 					->getEMailAddress();
 			} elseif ($identifyMethod->getName() === 'email') {
 				$email = $identifyMethod->getEntity()->getIdentifierValue();
@@ -74,12 +78,21 @@ class MailNotifyListener implements IEventListener {
 			if (empty($email)) {
 				return;
 			}
+
+			$users = $this->userManager->getByEmail($email);
+			if (count($users) === 1) {
+				$userId = $users[0]->getUID();
+				if ($this->isNotificationDisabledAtActivity($userId, SendSignNotificationEvent::FILE_TO_SIGN)) {
+					return;
+				}
+			}
+
 			$isFirstNotification = $this->signRequestMapper->incrementNotificationCounter($signRequest, 'mail');
 			if ($isFirstNotification) {
-				$this->mail->notifyUnsignedUser($signRequest, $email);
+				$this->mail->notifyUnsignedUser($signRequest, $email, $signRequest->getDescription());
 				return;
 			}
-			$this->mail->notifySignDataUpdated($signRequest, $email);
+			$this->mail->notifySignDataUpdated($signRequest, $email, $signRequest->getDescription());
 		} catch (\InvalidArgumentException $e) {
 			$this->logger->error($e->getMessage(), ['exception' => $e]);
 			return;
@@ -114,12 +127,64 @@ class MailNotifyListener implements IEventListener {
 		}
 	}
 
+	protected function sendCanceledMailNotification(
+		SignRequest $signRequest,
+		IIdentifyMethod $identifyMethod,
+		FileEntity $libreSignFile,
+	): void {
+		try {
+			if ($identifyMethod->getEntity()->isDeletedAccount()) {
+				return;
+			}
+
+			$email = '';
+			if ($identifyMethod->getName() === 'account') {
+				$userId = $identifyMethod->getEntity()->getIdentifierValue();
+				$user = $this->userManager->get($userId);
+				if ($user) {
+					$email = $user->getEMailAddress();
+				}
+			} elseif ($identifyMethod->getName() === 'email') {
+				$email = $identifyMethod->getEntity()->getIdentifierValue();
+			}
+
+			if (empty($email)) {
+				return;
+			}
+
+			$users = $this->userManager->getByEmail($email);
+			if (count($users) === 1) {
+				$userId = $users[0]->getUID();
+				if ($this->isNotificationDisabledAtActivity($userId, SignRequestCanceledEvent::SIGN_REQUEST_CANCELED)) {
+					return;
+				}
+			}
+
+			$this->mail->notifyCanceledRequest($signRequest, $email, $libreSignFile);
+
+		} catch (\InvalidArgumentException $e) {
+			$this->logger->error($e->getMessage(), ['exception' => $e]);
+			return;
+		}
+	}
+
 	private function isNotificationDisabledAtActivity(string $userId, string $type): bool {
 		if (!class_exists(\OCA\Activity\UserSettings::class)) {
 			return false;
 		}
 		$activityUserSettings = \OCP\Server::get(\OCA\Activity\UserSettings::class);
 		if ($activityUserSettings) {
+			$manager = \OCP\Server::get(\OCP\Activity\IManager::class);
+			try {
+				$manager->getSettingById($type);
+			} catch (\Exception $e) {
+				return false;
+			}
+
+			$adminSetting = $activityUserSettings->getAdminSetting('email', $type);
+			if (!$adminSetting) {
+				return true;
+			}
 			$notificationSetting = $activityUserSettings->getUserSetting(
 				$userId,
 				'email',

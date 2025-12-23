@@ -13,9 +13,13 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use OC\SystemConfig;
 use OCA\Libresign\AppInfo\Application;
+use OCA\Libresign\Db\CrlMapper;
+use OCA\Libresign\Enum\CertificateType;
+use OCA\Libresign\Exception\EmptyCertificateException;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CfsslServerHandler;
 use OCA\Libresign\Helper\ConfigureCheckHelper;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Service\CertificatePolicyService;
 use OCA\Libresign\Service\Install\InstallService;
 use OCP\Files\AppData\IAppDataFactory;
@@ -23,6 +27,8 @@ use OCP\IAppConfig;
 use OCP\IConfig;
 use OCP\IDateTimeFormatter;
 use OCP\ITempManager;
+use OCP\IURLGenerator;
+use Psr\Log\LoggerInterface;
 
 /**
  * Class CfsslHandler
@@ -48,27 +54,43 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 		protected ITempManager $tempManager,
 		protected CfsslServerHandler $cfsslServerHandler,
 		protected CertificatePolicyService $certificatePolicyService,
+		protected IURLGenerator $urlGenerator,
+		protected CaIdentifierService $caIdentifierService,
+		protected CrlMapper $crlMapper,
+		protected LoggerInterface $logger,
 	) {
-		parent::__construct($config, $appConfig, $appDataFactory, $dateTimeFormatter, $tempManager, $certificatePolicyService);
+		parent::__construct(
+			$config,
+			$appConfig,
+			$appDataFactory,
+			$dateTimeFormatter,
+			$tempManager,
+			$certificatePolicyService,
+			$urlGenerator,
+			$caIdentifierService,
+			$logger,
+		);
 
-		$this->cfsslServerHandler->configCallback(fn () => $this->getConfigPath());
+		$this->cfsslServerHandler->configCallback(fn () => $this->getCurrentConfigPath());
 	}
 
 	#[\Override]
 	public function generateRootCert(
 		string $commonName,
 		array $names = [],
-	): string {
-		$key = bin2hex(random_bytes(16));
+	): void {
+		if (empty($commonName)) {
+			throw new EmptyCertificateException('Common Name (CN) cannot be empty for root certificate');
+		}
 
 		$this->cfsslServerHandler->createConfigServer(
 			$commonName,
 			$names,
-			$key,
-			$this->expirity()
+			$this->getCaExpiryInDays(),
+			$this->getCrlDistributionUrl(),
 		);
 
-		$this->genkey();
+		$this->gencert();
 
 		$this->stopIfRunning();
 
@@ -78,14 +100,14 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 			}
 			sleep(2);
 		}
-
-		return $key;
 	}
 
 	#[\Override]
 	public function generateCertificate(): string {
+		$this->validateRootCertificate();
+
 		$certKeys = $this->newCert();
-		return parent::exportToPkcs12(
+		$pkcs12 = parent::exportToPkcs12(
 			$certKeys['certificate'],
 			$certKeys['private_key'],
 			[
@@ -96,17 +118,21 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 				],
 			],
 		);
+
+		$parsed = $this->readCertificate($pkcs12, $this->getPassword());
+		$this->persistSerialNumberToCrl($parsed);
+
+		return $pkcs12;
 	}
 
 	#[\Override]
 	public function isSetupOk(): bool {
-		if (!parent::isSetupOk()) {
-			return false;
-		};
-		$configPath = $this->getConfigPath();
+		$configPath = $this->getCurrentConfigPath();
 		$certificate = file_exists($configPath . DIRECTORY_SEPARATOR . 'ca.pem');
 		$privateKey = file_exists($configPath . DIRECTORY_SEPARATOR . 'ca-key.pem');
-		if (!$certificate || !$privateKey) {
+		$csrServer = file_exists($configPath . DIRECTORY_SEPARATOR . 'csr_server.json');
+		$configServer = file_exists($configPath . DIRECTORY_SEPARATOR . 'config_server.json');
+		if (!$certificate || !$privateKey || !$csrServer || !$configServer) {
 			return false;
 		}
 		try {
@@ -118,24 +144,33 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 	}
 
 	#[\Override]
-	public function configureCheck(): array {
-		$return = $this->checkBinaries();
-		$configPath = $this->getConfigPath();
-		if (is_dir($configPath)) {
-			return array_merge(
-				$return,
-				[(new ConfigureCheckHelper())
-					->setSuccessMessage('Root certificate config files found.')
-					->setResource('cfssl-configure')]
-			);
-		}
-		return array_merge(
-			$return,
-			[(new ConfigureCheckHelper())
-				->setErrorMessage('CFSSL (root certificate) not configured.')
-				->setResource('cfssl-configure')
-				->setTip('Run occ libresign:configure:cfssl --help')]
-		);
+	protected function getConfigureCheckResourceName(): string {
+		return 'cfssl-configure';
+	}
+
+	#[\Override]
+	protected function getCertificateRegenerationTip(): string {
+		return 'Consider regenerating the root certificate with: occ libresign:configure:cfssl --cn="Your CA Name"';
+	}
+
+	#[\Override]
+	protected function getEngineSpecificChecks(): array {
+		return $this->checkBinaries();
+	}
+
+	#[\Override]
+	protected function getSetupSuccessMessage(): string {
+		return 'Root certificate config files found.';
+	}
+
+	#[\Override]
+	protected function getSetupErrorMessage(): string {
+		return 'CFSSL (root certificate) not configured.';
+	}
+
+	#[\Override]
+	protected function getSetupErrorTip(): string {
+		return 'Run occ libresign:configure:cfssl --help';
 	}
 
 	#[\Override]
@@ -158,7 +193,7 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 	private function newCert(): array {
 		$json = [
 			'json' => [
-				'profile' => 'CA',
+				'profile' => 'client',
 				'request' => [
 					'hosts' => $this->getHosts(),
 					'CN' => $this->getCommonName(),
@@ -167,11 +202,17 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 						'size' => 2048,
 					],
 					'names' => [],
+					'crl_url' => $this->getCrlDistributionUrl(),
 				],
 			],
 		];
 
 		$names = $this->getNames();
+		foreach ($names as $key => $value) {
+			if (!empty($value) && is_array($value)) {
+				$names[$key] = implode(', ', $value);
+			}
+		}
 		if (!empty($names)) {
 			$json['json']['request']['names'][] = $names;
 		}
@@ -198,13 +239,28 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 		return $responseDecoded['result'];
 	}
 
-	private function genkey(): void {
+	private function gencert(): void {
 		$binary = $this->getBinary();
-		$configPath = $this->getConfigPath();
-		$cmd = $binary . ' genkey '
-			. '-initca=true ' . $configPath . DIRECTORY_SEPARATOR . 'csr_server.json | '
-			. $binary . 'json -bare ' . $configPath . DIRECTORY_SEPARATOR . 'ca;';
-		shell_exec($cmd);
+		$configPath = $this->getCurrentConfigPath();
+		$csrFile = $configPath . '/csr_server.json';
+
+		$cmd = escapeshellcmd($binary) . ' gencert -initca ' . escapeshellarg($csrFile);
+		$output = shell_exec($cmd);
+
+		if (!$output) {
+			throw new \RuntimeException('cfssl without output.');
+		}
+
+		$json = json_decode($output, true);
+		if (!$json || !isset($json['cert'], $json['key'], $json['csr'])) {
+			throw new \RuntimeException('Error generating CA: invalid cfssl output.');
+		}
+
+		file_put_contents($configPath . '/ca.pem', $json['cert']);
+		file_put_contents($configPath . '/ca-key.pem', $json['key']);
+		file_put_contents($configPath . '/ca.csr', $json['csr']);
+
+		$this->persistRootCertificateFromData($json['cert']);
 	}
 
 	private function getClient(): Client {
@@ -258,11 +314,11 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 			return;
 		}
 		$binary = $this->getBinary();
-		$configPath = $this->getConfigPath();
+		$configPath = $this->getCurrentConfigPath();
 		if (!$configPath) {
 			throw new LibresignException('CFSSL not configured.');
 		}
-		$this->cfsslServerHandler->updateExpirity($this->expirity());
+		$this->cfsslServerHandler->updateExpirity($this->getCaExpiryInDays());
 		$cmd = 'nohup ' . $binary . ' serve -address=127.0.0.1 '
 			. '-ca-key ' . $configPath . DIRECTORY_SEPARATOR . 'ca-key.pem '
 			. '-ca ' . $configPath . DIRECTORY_SEPARATOR . 'ca.pem '
@@ -352,7 +408,6 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 		if ($uri = $this->appConfig->getValueString(Application::APP_ID, 'cfssl_uri')) {
 			return $uri;
 		}
-		// In case config is an empty string
 		$this->appConfig->deleteKey(Application::APP_ID, 'cfssl_uri');
 
 		$this->cfsslUri = self::CFSSL_URI;
@@ -442,5 +497,141 @@ class CfsslHandler extends AEngineHandler implements IEngineHandler {
 			->setSuccessMessage('Runtime: ' . $matches['version'][1])
 			->setResource('cfssl');
 		return $return;
+	}
+
+	/**
+	 * Get Authority Key Identifier from certificate (needed for CFSSL revocation)
+	 *
+	 * @param string $certificatePem PEM encoded certificate
+	 * @return string Authority Key Identifier in lowercase without colons
+	 */
+	public function getAuthorityKeyId(string $certificatePem): string {
+		$cert = openssl_x509_read($certificatePem);
+		if (!$cert) {
+			throw new \RuntimeException('Invalid certificate format');
+		}
+
+		$parsed = openssl_x509_parse($cert);
+		if (!$parsed || !isset($parsed['extensions']['authorityKeyIdentifier'])) {
+			throw new \RuntimeException('Certificate does not contain Authority Key Identifier');
+		}
+
+		$authKeyId = $parsed['extensions']['authorityKeyIdentifier'];
+
+		if (preg_match('/keyid:([A-Fa-f0-9:]+)/', $authKeyId, $matches)) {
+			return strtolower(str_replace(':', '', $matches[1]));
+		}
+
+		throw new \RuntimeException('Could not parse Authority Key Identifier');
+	}
+
+	/**
+	 * Revoke a certificate using CFSSL API
+	 *
+	 * @param string $serialNumber Certificate serial number in decimal format
+	 * @param string $authorityKeyId Authority key identifier (lowercase, no colons)
+	 * @param string $reason CRLReason description string (e.g., 'superseded', 'keyCompromise')
+	 */
+	public function revokeCertificate(string $serialNumber, string $authorityKeyId, string $reason): bool {
+		try {
+			$json = [
+				'json' => [
+					'serial' => $serialNumber,
+					'authority_key_id' => $authorityKeyId,
+					'reason' => $reason,
+				],
+			];
+
+			$response = $this->getClient()->request('POST', 'revoke', $json);
+
+			$responseData = json_decode((string)$response->getBody(), true);
+
+			if (!isset($responseData['success'])) {
+				$errorMessage = isset($responseData['errors'])
+					? implode(', ', array_column($responseData['errors'], 'message'))
+					: 'Unknown CFSSL error';
+				throw new \RuntimeException('CFSSL revocation failed: ' . $errorMessage);
+			}
+
+			return $responseData['success'];
+
+		} catch (RequestException|ConnectException $e) {
+			throw new \RuntimeException('Failed to communicate with CFSSL server: ' . $e->getMessage());
+		} catch (\Throwable $e) {
+			throw new \RuntimeException('CFSSL certificate revocation error: ' . $e->getMessage());
+		}
+	}
+
+	private function persistSerialNumberToCrl(array $parsed): void {
+		if (!isset($parsed['serialNumberHex']) || !isset($parsed['valid_to'])) {
+			return;
+		}
+
+		$serialNumber = $parsed['serialNumberHex'];
+
+		$owner = $this->getCommonName() ?? 'Unknown';
+
+		$expiresAt = null;
+		if (isset($parsed['validTo_time_t'])) {
+			$expiresAt = new \DateTime('@' . $parsed['validTo_time_t']);
+		}
+
+		$issuer = $parsed['issuer'] ?? [];
+		$subject = $parsed['subject'] ?? [];
+
+		$this->crlMapper->createCertificate(
+			$serialNumber,
+			$owner,
+			'cfssl',
+			$this->caIdentifierService->getInstanceId(),
+			$this->caIdentifierService->getCaIdParsed()['generation'],
+			new \DateTime(),
+			$expiresAt,
+			$issuer,
+			$subject,
+			CertificateType::LEAF->value,
+		);
+	}
+
+	private function persistRootCertificateFromData(string $certPem): void {
+		$x509Resource = openssl_x509_read($certPem);
+		if (!$x509Resource) {
+			throw new \RuntimeException('Failed to parse root certificate');
+		}
+
+		$parsed = openssl_x509_parse($x509Resource);
+		if (!$parsed) {
+			throw new \RuntimeException('Failed to extract root certificate information');
+		}
+
+		$serialNumber = $parsed['serialNumberHex'] ?? '';
+		if (empty($serialNumber)) {
+			throw new \RuntimeException('Root certificate has no serial number');
+		}
+
+		$owner = $this->getCommonName() ?? 'Root CA';
+
+		$expiresAt = null;
+		if (isset($parsed['validTo_time_t'])) {
+			$expiresAt = new \DateTime('@' . $parsed['validTo_time_t']);
+		}
+
+		/** @var array<string, mixed> $issuer */
+		$issuer = $parsed['issuer'] ?? [];
+		/** @var array<string, mixed> $subject */
+		$subject = $parsed['subject'] ?? [];
+
+		$this->crlMapper->createCertificate(
+			$serialNumber,
+			$owner,
+			'cfssl',
+			$this->caIdentifierService->getInstanceId(),
+			$this->caIdentifierService->getCaIdParsed()['generation'],
+			new \DateTime(),
+			$expiresAt,
+			$issuer,
+			$subject,
+			CertificateType::ROOT->value,
+		);
 	}
 }

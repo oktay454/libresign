@@ -31,12 +31,34 @@ class Password extends AbstractSignatureMethod {
 	public function validateToSign(): void {
 		$this->validateToIdentify();
 		try {
-			$this->pkcs12Handler
+			$certificateData = $this->pkcs12Handler
 				->setCertificate($this->pkcs12Handler->getPfxOfCurrentSigner($this->userSession->getUser()?->getUID()))
 				->setPassword($this->codeSentByUser)
 				->readCertificate();
 		} catch (InvalidPasswordException) {
 			throw new LibresignException($this->identifyService->getL10n()->t('Invalid user or password'));
+		}
+
+		$this->validateCertificateRevocation($certificateData);
+		$this->validateCertificateExpiration($certificateData);
+	}
+
+	private function validateCertificateRevocation(array $certificateData): void {
+		if (isset($certificateData['crl_validation']) && $certificateData['crl_validation'] !== 'valid') {
+			throw new LibresignException($this->identifyService->getL10n()->t('Certificate has been revoked'), 400);
+		}
+	}
+
+	private function validateCertificateExpiration(array $certificateData): void {
+		if (isset($certificateData['valid_to'])) {
+			$validTo = \DateTime::createFromFormat('F j, Y, g:i:s A', $certificateData['valid_to']);
+			if ($validTo === false) {
+				throw new LibresignException($this->identifyService->getL10n()->t('Invalid certificate'), 400);
+			}
+			$now = new \DateTime();
+			if ($validTo < $now) {
+				throw new LibresignException($this->identifyService->getL10n()->t('Certificate has expired'), 400);
+			}
 		}
 	}
 

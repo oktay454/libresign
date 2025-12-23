@@ -69,6 +69,7 @@ class ConfigureCheckService {
 		$return = array_merge($return, $this->checkPdftk());
 		$return = array_merge($return, $this->checkJSignPdf());
 		$return = array_merge($return, $this->checkPoppler());
+		$return = array_merge($return, $this->checkImagick());
 		return $return;
 	}
 
@@ -436,11 +437,35 @@ class ConfigureCheckService {
 					];
 				}
 				if (!str_contains($matches['encoding'], 'UTF-8')) {
+					$detectedEncoding = trim($matches['encoding']);
+					$phpLocale = setlocale(LC_CTYPE, 0);
+					$phpLcAll = getenv('LC_ALL');
+					$phpLang = getenv('LANG');
+
+					$tip = sprintf(
+						"Java detected encoding \"%s\" but UTF-8 is required.\n\n"
+						. "**Current PHP environment:**\n"
+						. "- LC_CTYPE: %s\n"
+						. "- LC_ALL: %s\n"
+						. "- LANG: %s\n\n"
+						. "**To fix this issue:**\n"
+						. "1. Set LC_ALL and LANG environment variables (e.g., LC_ALL=en_US.UTF-8) for your web server user\n"
+						. "2. Restart your web server after making changes\n"
+						. "3. Verify with command: `locale charmap` (should return UTF-8)\n\n"
+						. 'For more details, see: [Issue #4872](https://github.com/LibreSign/libresign/issues/4872)',
+						$detectedEncoding,
+						$phpLocale ?: 'not set',
+						$phpLcAll ?: 'not set',
+						$phpLang ?: 'not set'
+					);
 					return $this->result['java'] = [
 						(new ConfigureCheckHelper())
-							->setInfoMessage('Non-UTF-8 encoding detected. This may cause issues with accented or special characters')
+							->setInfoMessage(sprintf(
+								'Non-UTF-8 encoding detected: %s. This may cause issues with accented or special characters',
+								$detectedEncoding
+							))
 							->setResource('java')
-							->setTip(' Ensure the system encoding is UTF-8. You can check it using: locale charmap'),
+							->setTip($tip),
 					];
 				}
 				return $this->result['java'] = [
@@ -496,5 +521,25 @@ class ConfigureCheckService {
 			];
 		}
 		return $return;
+	}
+
+	/**
+	 * Check if Imagick extension is loaded
+	 *
+	 * @return ConfigureCheckHelper[]
+	 */
+	public function checkImagick(): array {
+		if (!empty($this->result['imagick'])) {
+			return $this->result['imagick'];
+		}
+		if (!extension_loaded('imagick')) {
+			return $this->result['imagick'] = [
+				(new ConfigureCheckHelper())
+					->setInfoMessage('Imagick extension is not loaded')
+					->setResource('imagick')
+					->setTip('Install php-imagick to enable visible signatures, background images, and signature element rendering.'),
+			];
+		}
+		return $this->result['imagick'] = [];
 	}
 }

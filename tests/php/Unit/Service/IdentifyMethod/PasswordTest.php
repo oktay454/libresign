@@ -11,8 +11,10 @@ namespace OCA\Libresign\Tests\Unit\Service;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
+use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Handler\FooterHandler;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
+use OCA\Libresign\Service\CaIdentifierService;
 use OCA\Libresign\Service\FolderService;
 use OCA\Libresign\Service\IdentifyMethod\IdentifyService;
 use OCA\Libresign\Service\IdentifyMethod\SignatureMethod\Password;
@@ -36,10 +38,12 @@ final class PasswordTest extends \OCA\Libresign\Tests\Unit\TestCase {
 	private FooterHandler&MockObject $footerHandler;
 	private ITempManager $tempManager;
 	private LoggerInterface&MockObject $logger;
+	private CaIdentifierService&MockObject $caIdentifierService;
+	private DocMdpHandler&MockObject $docMdpHandler;
 
 	public function setUp(): void {
 		$this->identifyService = $this->createMock(IdentifyService::class);
-		$this->appConfig = $this->getMockAppConfig();
+		$this->appConfig = $this->getMockAppConfigWithReset();
 		$this->folderService = $this->createMock(FolderService::class);
 		$this->certificateEngineFactory = $this->createMock(CertificateEngineFactory::class);
 		$this->l10n = \OCP\Server::get(IL10NFactory::class)->get(Application::APP_ID);
@@ -47,6 +51,8 @@ final class PasswordTest extends \OCA\Libresign\Tests\Unit\TestCase {
 		$this->tempManager = \OCP\Server::get(ITempManager::class);
 		$this->userSession = $this->createMock(IUserSession::class);
 		$this->logger = $this->createMock(LoggerInterface::class);
+		$this->caIdentifierService = $this->createMock(CaIdentifierService::class);
+		$this->docMdpHandler = $this->createMock(DocMdpHandler::class);
 		$this->pkcs12Handler = $this->getPkcs12Instance();
 	}
 
@@ -71,6 +77,8 @@ final class PasswordTest extends \OCA\Libresign\Tests\Unit\TestCase {
 				$this->footerHandler,
 				$this->tempManager,
 				$this->logger,
+				$this->caIdentifierService,
+				$this->docMdpHandler,
 			])
 			->onlyMethods($methods)
 			->getMock();

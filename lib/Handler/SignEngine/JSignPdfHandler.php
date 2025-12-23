@@ -14,6 +14,7 @@ use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\Exception\LibresignException;
 use OCA\Libresign\Handler\CertificateEngine\CertificateEngineFactory;
 use OCA\Libresign\Helper\JavaHelper;
+use OCA\Libresign\Service\DocMdpConfigService;
 use OCA\Libresign\Service\Install\InstallService;
 use OCA\Libresign\Service\SignatureBackgroundService;
 use OCA\Libresign\Service\SignatureTextService;
@@ -40,6 +41,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 		private SignatureBackgroundService $signatureBackgroundService,
 		protected CertificateEngineFactory $certificateEngineFactory,
 		protected JavaHelper $javaHelper,
+		private DocMdpConfigService $docMdpConfigService,
 	) {
 	}
 
@@ -86,6 +88,11 @@ class JSignPdfHandler extends Pkcs12Handler {
 					. ' -Duser.home=' . escapeshellarg($this->getHome()) . ' '
 				);
 			}
+
+			$certificationLevel = $this->getCertificationLevel();
+			if ($certificationLevel !== null) {
+				$this->jSignParam->setJSignParameters(' -cl ' . $certificationLevel);
+			}
 		}
 		return $this->jSignParam;
 	}
@@ -102,7 +109,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 	 */
 	private function getHome(): string {
 		$jSignPdfHome = $this->appConfig->getValueString(Application::APP_ID, 'jsignpdf_home', '');
-		if ($jSignPdfHome) {
+		if ($jSignPdfHome && is_dir($jSignPdfHome)) {
 			return $jSignPdfHome;
 		}
 		$jsignpdfTempFolder = $this->tempManager->getTemporaryFolder('jsignpdf');
@@ -147,8 +154,18 @@ class JSignPdfHandler extends Pkcs12Handler {
 		return 'SHA256';
 	}
 
+	private function getCertificationLevel(): ?string {
+		if (!$this->docMdpConfigService->isEnabled()) {
+			return null;
+		}
+
+		return $this->docMdpConfigService->getLevel()->name;
+	}
+
 	#[\Override]
 	public function sign(): File {
+		$this->beforeSign();
+
 		$signedContent = $this->getSignedContent();
 		$this->getInputFile()->putContent($signedContent);
 		return $this->getInputFile();
@@ -282,12 +299,18 @@ class JSignPdfHandler extends Pkcs12Handler {
 
 	#[\Override]
 	public function readCertificate(): array {
-		return $this->certificateEngineFactory
+		$result = $this->certificateEngineFactory
 			->getEngine()
 			->readCertificate(
 				$this->getCertificate(),
 				$this->getPassword()
 			);
+
+		if (!is_array($result)) {
+			throw new \RuntimeException('Failed to read certificate data');
+		}
+
+		return $result;
 	}
 
 	private function createTextImage(int $width, int $height, float $fontSize, float $scaleFactor): string {
@@ -296,7 +319,7 @@ class JSignPdfHandler extends Pkcs12Handler {
 			$commonName = $params['SignerCommonName'];
 		} else {
 			$certificateData = $this->readCertificate();
-			$commonName = $certificateData['subject']['CN'];
+			$commonName = $certificateData['subject']['CN'] ?? throw new \RuntimeException('Certificate must have a Common Name (CN) in subject field');
 		}
 		$content = $this->signatureTextService->signerNameImage(
 			width: $width,
@@ -315,6 +338,9 @@ class JSignPdfHandler extends Pkcs12Handler {
 	}
 
 	private function mergeBackgroundWithSignature(string $backgroundPath, string $signaturePath, float $scaleFactor): string {
+		if (!extension_loaded('imagick')) {
+			throw new \Exception('Extension imagick is not loaded.');
+		}
 		$baseWidth = $this->signatureTextService->getFullSignatureWidth();
 		$baseHeight = $this->signatureTextService->getFullSignatureHeight();
 

@@ -16,12 +16,12 @@ use OC\AppFramework\Http as AppFrameworkHttp;
 use OC\User\NoUserException;
 use OCA\Libresign\AppInfo\Application;
 use OCA\Libresign\DataObjects\VisibleElementAssoc;
-use OCA\Libresign\Db\AccountFile;
-use OCA\Libresign\Db\AccountFileMapper;
 use OCA\Libresign\Db\File as FileEntity;
 use OCA\Libresign\Db\FileElement;
 use OCA\Libresign\Db\FileElementMapper;
 use OCA\Libresign\Db\FileMapper;
+use OCA\Libresign\Db\IdDocs;
+use OCA\Libresign\Db\IdDocsMapper;
 use OCA\Libresign\Db\IdentifyMethod;
 use OCA\Libresign\Db\IdentifyMethodMapper;
 use OCA\Libresign\Db\SignRequest as SignRequestEntity;
@@ -29,6 +29,7 @@ use OCA\Libresign\Db\SignRequestMapper;
 use OCA\Libresign\Db\UserElementMapper;
 use OCA\Libresign\Events\SignedEventFactory;
 use OCA\Libresign\Exception\LibresignException;
+use OCA\Libresign\Handler\DocMdpHandler;
 use OCA\Libresign\Handler\FooterHandler;
 use OCA\Libresign\Handler\PdfTk\Pdf;
 use OCA\Libresign\Handler\SignEngine\Pkcs12Handler;
@@ -78,7 +79,7 @@ class SignFileService {
 		protected IL10N $l10n,
 		private FileMapper $fileMapper,
 		private SignRequestMapper $signRequestMapper,
-		private AccountFileMapper $accountFileMapper,
+		private IdDocsMapper $idDocsMapper,
 		private FooterHandler $footerHandler,
 		protected FolderService $folderService,
 		private IClientService $client,
@@ -102,6 +103,9 @@ class SignFileService {
 		protected SignEngineFactory $signEngineFactory,
 		private SignedEventFactory $signedEventFactory,
 		private Pdf $pdf,
+		private DocMdpHandler $docMdpHandler,
+		private PdfSignatureDetectionService $pdfSignatureDetectionService,
+		private SequentialSigningService $sequentialSigningService,
 	) {
 	}
 
@@ -317,6 +321,7 @@ class SignFileService {
 	}
 
 	public function sign(): File {
+		$this->validateDocMdpAllowsSignatures();
 		$signedFile = $this->getEngine()->sign();
 
 		$hash = $this->computeHash($signedFile);
@@ -329,6 +334,51 @@ class SignFileService {
 		return $signedFile;
 	}
 
+	/**
+	 * @throws LibresignException If the document has DocMDP level 1 (no changes allowed)
+	 */
+	protected function validateDocMdpAllowsSignatures(): void {
+		$docmdpLevel = $this->libreSignFile->getDocmdpLevelEnum();
+
+		if ($docmdpLevel === \OCA\Libresign\Enum\DocMdpLevel::CERTIFIED_NO_CHANGES_ALLOWED) {
+			throw new LibresignException(
+				$this->l10n->t('This document has been certified with no changes allowed. You cannot add more signers to this document.'),
+				AppFrameworkHttp::STATUS_UNPROCESSABLE_ENTITY
+			);
+		}
+
+		if ($docmdpLevel === \OCA\Libresign\Enum\DocMdpLevel::NOT_CERTIFIED) {
+			$resource = $this->getLibreSignFileAsResource();
+
+			try {
+				if (!$this->docMdpHandler->allowsAdditionalSignatures($resource)) {
+					throw new LibresignException(
+						$this->l10n->t('This document has been certified with no changes allowed. You cannot add more signers to this document.'),
+						AppFrameworkHttp::STATUS_UNPROCESSABLE_ENTITY
+					);
+				}
+			} finally {
+				fclose($resource);
+			}
+		}
+	}
+
+	/**
+	 * @return resource
+	 * @throws LibresignException
+	 */
+	protected function getLibreSignFileAsResource() {
+		$fileToSign = $this->getNextcloudFile($this->libreSignFile);
+		$content = $fileToSign->getContent();
+		$resource = fopen('php://memory', 'r+');
+		if ($resource === false) {
+			throw new LibresignException('Failed to create temporary resource for PDF validation');
+		}
+		fwrite($resource, $content);
+		rewind($resource);
+		return $resource;
+	}
+
 	protected function computeHash(File $file): string {
 		return hash('sha256', $file->getContent());
 	}
@@ -337,7 +387,16 @@ class SignFileService {
 		$lastSignedDate = $this->getEngine()->getLastSignedDate();
 		$this->signRequest->setSigned($lastSignedDate);
 		$this->signRequest->setSignedHash($hash);
+		$this->signRequest->setStatusEnum(\OCA\Libresign\Enum\SignRequestStatus::SIGNED);
+
 		$this->signRequestMapper->update($this->signRequest);
+
+		$this->sequentialSigningService
+			->setFile($this->libreSignFile)
+			->releaseNextOrder(
+				$this->signRequest->getFileId(),
+				$this->signRequest->getSigningOrder()
+			);
 	}
 
 	protected function updateLibreSignFile(string $hash): void {
@@ -612,7 +671,8 @@ class SignFileService {
 				continue;
 			}
 			/** @var IToken $signatureMethod */
-			$signatureMethod->requestCode($identify, $identifyMethod->getEntity()->getIdentifierKey());
+			$identifier = $identify ?: $identifyMethod->getEntity()->getIdentifierValue();
+			$signatureMethod->requestCode($identifier, $identifyMethod->getEntity()->getIdentifierKey());
 			return;
 		}
 		throw new LibresignException($this->l10n->t('Sending authorization code not enabled.'));
@@ -659,20 +719,10 @@ class SignFileService {
 			if ($signRequest->getSigned()) {
 				throw new LibresignException($this->l10n->t('File already signed by you'), 1);
 			}
+			return $signRequest;
 		} catch (DoesNotExistException) {
-			try {
-				$accountFile = $this->accountFileMapper->getByFileId($libresignFile->getId());
-			} catch (\Throwable) {
-				throw new LibresignException($this->l10n->t('Invalid data to sign file'), 1);
-			}
-			$this->validateHelper->userCanApproveValidationDocuments($user);
-			$signRequest = new SignRequestEntity();
-			$signRequest->setFileId($libresignFile->getId());
-			$signRequest->setDisplayName($user->getDisplayName());
-			$signRequest->setUuid(UUIDUtil::getUUID());
-			$signRequest->setCreatedAt(new \DateTime('now', new \DateTimeZone('UTC')));
+			throw new LibresignException($this->l10n->t('Invalid data to sign file'), 1);
 		}
-		return $signRequest;
 	}
 
 	protected function getPdfToSign(File $originalFile): File {
@@ -680,20 +730,28 @@ class SignFileService {
 		if ($file instanceof File) {
 			return $file;
 		}
+
+		$originalContent = $originalFile->getContent();
+
+		if ($this->pdfSignatureDetectionService->hasSignatures($originalContent)) {
+			return $this->createSignedFile($originalFile, $originalContent);
+		}
+		$metadata = $this->footerHandler->getMetadata($originalFile, $this->libreSignFile);
 		$footer = $this->footerHandler
+			->setTemplateVar('uuid', $this->libreSignFile->getUuid())
 			->setTemplateVar('signers', array_map(fn (SignRequestEntity $signer) => [
 				'displayName' => $signer->getDisplayName(),
 				'signed' => $signer->getSigned()
 					? $signer->getSigned()->format(DateTimeInterface::ATOM)
 					: null,
 			], $this->getSigners()))
-			->getFooter($originalFile, $this->libreSignFile);
+			->getFooter($metadata['d']);
 		if ($footer) {
 			$stamp = $this->tempManager->getTemporaryFile('stamp.pdf');
 			file_put_contents($stamp, $footer);
 
 			$input = $this->tempManager->getTemporaryFile('input.pdf');
-			file_put_contents($input, $originalFile->getContent());
+			file_put_contents($input, $originalContent);
 
 			try {
 				$pdfContent = $this->pdf->applyStamp($input, $stamp);
@@ -701,7 +759,7 @@ class SignFileService {
 				throw new LibresignException($e->getMessage());
 			}
 		} else {
-			$pdfContent = $originalFile->getContent();
+			$pdfContent = $originalContent;
 		}
 		return $this->createSignedFile($originalFile, $pdfContent);
 	}
@@ -772,8 +830,8 @@ class SignFileService {
 		return $this->fileMapper->getByUuid($uuid);
 	}
 
-	public function getAccountFileById(int $fileId): AccountFile {
-		return $this->accountFileMapper->getByFileId($fileId);
+	public function getIdDocById(int $fileId): IdDocs {
+		return $this->idDocsMapper->getByFileId($fileId);
 	}
 
 	public function getNextcloudFile(FileEntity $fileData): File {
@@ -827,7 +885,7 @@ class SignFileService {
 				break;
 			case 'url':
 				try {
-					$this->accountFileMapper->getByFileId($fileEntity->getId());
+					$this->idDocsMapper->getByFileId($fileEntity->getId());
 					$url = ['url' => $this->urlGenerator->linkToRoute('libresign.page.getPdf', ['uuid' => $uuid])];
 				} catch (DoesNotExistException) {
 					$url = ['url' => $this->urlGenerator->linkToRoute('libresign.page.getPdfFile', ['uuid' => $uuid])];

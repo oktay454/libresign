@@ -9,6 +9,8 @@ declare(strict_types=1);
 namespace OCA\Libresign\Db;
 
 use DateTimeInterface;
+use OCA\Libresign\Enum\SignatureFlow;
+use OCA\Libresign\Enum\SignRequestStatus;
 use OCA\Libresign\Helper\Pagination;
 use OCA\Libresign\Service\IdentifyMethod\IIdentifyMethod;
 use OCA\Libresign\Service\IdentifyMethodService;
@@ -58,10 +60,17 @@ class SignRequestMapper extends QBMapper {
 			if (!isset($metadata['notify'])) {
 				$this->firstNotification = true;
 			}
-			$metadata['notify'][] = [
+
+			$notificationEntry = [
 				'method' => $method,
 				'date' => time(),
 			];
+
+			if (!empty($fromDatabase->getDescription())) {
+				$notificationEntry['description'] = $fromDatabase->getDescription();
+			}
+
+			$metadata['notify'][] = $notificationEntry;
 			$fromDatabase->setMetadata($metadata);
 			$this->update($fromDatabase);
 			$this->db->commit();
@@ -482,7 +491,8 @@ class SignRequestMapper extends QBMapper {
 		$qb = $this->db->getQueryBuilder();
 		$qb->from('libresign_file', 'f')
 			->leftJoin('f', 'libresign_sign_request', 'sr', 'sr.file_id = f.id')
-			->leftJoin('f', 'libresign_identify_method', 'im', $qb->expr()->eq('sr.id', 'im.sign_request_id'));
+			->leftJoin('f', 'libresign_identify_method', 'im', $qb->expr()->eq('sr.id', 'im.sign_request_id'))
+			->leftJoin('f', 'libresign_id_docs', 'id', 'id.file_id = f.id');
 		if ($count) {
 			$qb->select($qb->func()->count())
 				->setFirstResult(0)
@@ -491,21 +501,27 @@ class SignRequestMapper extends QBMapper {
 			$qb->select(
 				'f.id',
 				'f.node_id',
+				'f.signed_node_id',
 				'f.user_id',
 				'f.uuid',
 				'f.name',
 				'f.status',
 				'f.metadata',
 				'f.created_at',
+				'f.signature_flow',
+				'f.docmdp_level',
 			)
 				->groupBy(
 					'f.id',
 					'f.node_id',
+					'f.signed_node_id',
 					'f.user_id',
 					'f.uuid',
 					'f.name',
 					'f.status',
 					'f.created_at',
+					'f.signature_flow',
+					'f.docmdp_level',
 				);
 			// metadata is a json column, the right way is to use f.metadata::text
 			// when the database is PostgreSQL. The problem is that the command
@@ -524,10 +540,12 @@ class SignRequestMapper extends QBMapper {
 			$qb->expr()->eq('f.user_id', $qb->createNamedParameter($userId)),
 			$qb->expr()->andX(
 				$qb->expr()->eq('im.identifier_key', $qb->createNamedParameter(IdentifyMethodService::IDENTIFY_ACCOUNT)),
-				$qb->expr()->eq('im.identifier_value', $qb->createNamedParameter($userId))
+				$qb->expr()->eq('im.identifier_value', $qb->createNamedParameter($userId)),
+				$qb->expr()->neq('f.status', $qb->createNamedParameter(File::STATUS_DRAFT)),
+				$qb->expr()->neq('sr.status', $qb->createNamedParameter(SignRequestStatus::DRAFT->value)),
 			)
 		];
-		$qb->where($qb->expr()->orX(...$or));
+		$qb->where($qb->expr()->orX(...$or))->andWhere($qb->expr()->isNull('id.id'));
 		if ($filter) {
 			if (isset($filter['email']) && filter_var($filter['email'], FILTER_VALIDATE_EMAIL)) {
 				$or[] = $qb->expr()->andX(
@@ -540,9 +558,9 @@ class SignRequestMapper extends QBMapper {
 					$qb->expr()->eq('sr.uuid', $qb->createNamedParameter($filter['signer_uuid']))
 				);
 			}
-			if (!empty($filter['nodeId'])) {
+			if (!empty($filter['nodeIds'])) {
 				$qb->andWhere(
-					$qb->expr()->eq('f.node_id', $qb->createNamedParameter($filter['nodeId'], IQueryBuilder::PARAM_INT))
+					$qb->expr()->in('f.node_id', $qb->createNamedParameter($filter['nodeIds'], IQueryBuilder::PARAM_STR_ARRAY))
 				);
 			}
 			if (!empty($filter['status'])) {
@@ -551,13 +569,15 @@ class SignRequestMapper extends QBMapper {
 				);
 			}
 			if (!empty($filter['start'])) {
+				$start = (new \DateTime('@' . $filter['start'], new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 				$qb->andWhere(
-					$qb->expr()->gte('f.created_at', $qb->createNamedParameter($filter['start'], IQueryBuilder::PARAM_INT))
+					$qb->expr()->gte('f.created_at', $qb->createNamedParameter($start, IQueryBuilder::PARAM_STR))
 				);
 			}
 			if (!empty($filter['end'])) {
+				$end = (new \DateTime('@' . $filter['end'], new \DateTimeZone('UTC')))->format('Y-m-d H:i:s');
 				$qb->andWhere(
-					$qb->expr()->lte('f.created_at', $qb->createNamedParameter($filter['end'], IQueryBuilder::PARAM_INT))
+					$qb->expr()->lte('f.created_at', $qb->createNamedParameter($end, IQueryBuilder::PARAM_STR))
 				);
 			}
 		}
@@ -602,6 +622,7 @@ class SignRequestMapper extends QBMapper {
 		$row['status'] = (int)$row['status'];
 		$row['statusText'] = $this->fileMapper->getTextOfStatus($row['status']);
 		$row['nodeId'] = (int)$row['node_id'];
+		$row['signedNodeId'] = (int)$row['signed_node_id'];
 		$row['requested_by'] = [
 			'userId' => $row['user_id'],
 			'displayName' => $this->userManager->get($row['user_id'])?->getDisplayName(),
@@ -609,10 +630,37 @@ class SignRequestMapper extends QBMapper {
 		$row['created_at'] = (new \DateTime($row['created_at']))->setTimezone(new \DateTimeZone('UTC'))->format(DateTimeInterface::ATOM);
 		$row['file'] = $this->urlGenerator->linkToRoute('libresign.page.getPdf', ['uuid' => $row['uuid']]);
 		$row['nodeId'] = (int)$row['node_id'];
+
+		$row['name'] = $this->removeExtensionFromName($row['name'], $row['metadata']);
+		$row['signatureFlow'] = SignatureFlow::fromNumeric((int)($row['signature_flow']))->value;
+		$row['docmdpLevel'] = (int)($row['docmdp_level'] ?? 0);
+
 		unset(
 			$row['user_id'],
 			$row['node_id'],
+			$row['signed_node_id'],
+			$row['signature_flow'],
+			$row['docmdp_level'],
 		);
 		return $row;
+	}
+
+	private function removeExtensionFromName(string $name, ?string $metadataJson): string {
+		if (empty($name) || empty($metadataJson)) {
+			return $name;
+		}
+
+		$metadata = json_decode($metadataJson, true);
+		if (!isset($metadata['extension'])) {
+			return $name;
+		}
+
+		$extensionPattern = '/\.' . preg_quote($metadata['extension'], '/') . '$/i';
+		$result = preg_replace($extensionPattern, '', $name);
+		return $result ?? $name;
+	}
+
+	public function getTextOfSignerStatus(int $status): string {
+		return SignRequestStatus::from($status)->getLabel($this->l10n);
 	}
 }

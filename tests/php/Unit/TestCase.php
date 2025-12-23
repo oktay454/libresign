@@ -82,6 +82,14 @@ class TestCase extends \Test\TestCase {
 		return $service;
 	}
 
+	public static function getMockAppConfigWithReset(): IAppConfig {
+		$appConfig = self::getMockAppConfig();
+		if ($appConfig instanceof AppConfigOverwrite) {
+			$appConfig->reset();
+		}
+		return $appConfig;
+	}
+
 	public function mockConfig($config):void {
 		$service = \OCP\Server::get(\OCP\IConfig::class);
 		if (!$service instanceof AllConfigOverwrite) {
@@ -175,7 +183,7 @@ class TestCase extends \Test\TestCase {
 		$delete->delete('libresign_sign_request')->executeStatement();
 		$delete->delete('libresign_user_element')->executeStatement();
 		$delete->delete('libresign_file_element')->executeStatement();
-		$delete->delete('libresign_account_file')->executeStatement();
+		$delete->delete('libresign_id_docs')->executeStatement();
 	}
 
 	/**

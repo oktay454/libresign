@@ -4,6 +4,7 @@
 -->
 <template>
 	<NcDialog v-if="modal"
+		:name="t('libresign', 'Signature positions')"
 		size="normal"
 		@closing="closeModal">
 		<div v-if="filesStore.loading">
@@ -31,19 +32,18 @@
 				</li>
 				<Signer v-for="(signer, key) in document.signers"
 					:key="key"
-					:current-signer="key"
+					:signer-index="key"
 					:class="{ disabled: signerSelected }"
-					:signer="signer"
 					event="libresign:visible-elements-select-signer">
 					<slot v-bind="{signer}" slot="actions" name="actions" />
 				</Signer>
 			</ul>
 			<NcButton v-if="canSave"
-				:variant="variantOfRequestButton"
+				:variant="variantOfSaveButton"
 				:wide="true"
 				:class="{ disabled: signerSelected }"
-				@click="showConfirm = true">
-				{{ t('libresign', 'Request') }}
+				@click="save()">
+				{{ t('libresign', 'Save') }}
 			</NcButton>
 
 			<NcButton v-if="canSign"
@@ -57,41 +57,18 @@
 			<PdfEditor ref="pdfEditor"
 				width="100%"
 				height="100%"
-				:file-src="document.file"
+				:files="[document.file]"
+				:file-names="[documentNameWithExtension]"
 				@pdf-editor:end-init="updateSigners"
 				@pdf-editor:on-delete-signer="onDeleteSigner" />
 		</div>
-		<NcDialog v-if="showConfirm"
-			:open.sync="showConfirm"
-			:name="t('libresign', 'Confirm')"
-			:no-close="loading"
-			:message="t('libresign', 'Request signatures?')">
-			<NcNoteCard v-if="errorConfirmRequest.length > 0"
-				type="error">
-				{{ errorConfirmRequest }}
-			</NcNoteCard>
-			<template #actions>
-				<NcButton :disabled="loading"
-					@click="showConfirm = false">
-					{{ t('libresign', 'Cancel') }}
-				</NcButton>
-				<NcButton variant="primary"
-					:disabled="loading"
-					@click="save">
-					<template #icon>
-						<NcLoadingIcon v-if="loading" :size="20" name="Loading" />
-					</template>
-					{{ t('libresign', 'Request') }}
-				</NcButton>
-			</template>
-		</NcDialog>
 	</NcDialog>
 </template>
 
 <script>
 import axios from '@nextcloud/axios'
 import { getCapabilities } from '@nextcloud/capabilities'
-import { showSuccess } from '@nextcloud/dialogs'
+import { showSuccess, showError } from '@nextcloud/dialogs'
 import { subscribe, unsubscribe, emit } from '@nextcloud/event-bus'
 import { loadState } from '@nextcloud/initial-state'
 import { generateOcsUrl } from '@nextcloud/router'
@@ -127,16 +104,14 @@ export default {
 		return {
 			canRequestSign: loadState('libresign', 'can_request_sign', false),
 			modal: false,
-			showConfirm: false,
 			loading: false,
-			errorConfirmRequest: '',
 			signerSelected: null,
 			width: getCapabilities().libresign.config['sign-elements']['full-signature-width'],
 			height: getCapabilities().libresign.config['sign-elements']['full-signature-height'],
 		}
 	},
 	computed: {
-		variantOfRequestButton() {
+		variantOfSaveButton() {
 			if (this.canSave) {
 				return 'primary'
 			}
@@ -150,6 +125,10 @@ export default {
 		},
 		document() {
 			return this.filesStore.getFile()
+		},
+		documentNameWithExtension() {
+			const doc = this.document
+			return `${doc.name}.${doc.metadata.extension}`
 		},
 		canSign() {
 			if (this.status !== SIGN_STATUS.ABLE_TO_SIGN) {
@@ -200,7 +179,6 @@ export default {
 			this.filesStore.loading = true
 		},
 		closeModal() {
-			this.errorConfirmRequest = ''
 			this.modal = false
 			this.filesStore.loading = false
 		},
@@ -237,14 +215,26 @@ export default {
 			this.stopAddSigner()
 		},
 		addSignerToPosition(event, page) {
-			const rect = event.target.getBoundingClientRect()
-			const x = event.clientX - rect.left
-			const y = event.clientY - rect.top
+			const canvas = event.target
+			const rect = canvas.getBoundingClientRect()
+			const scale = this.$refs.pdfEditor.$refs.vuePdfEditor.scale || 1
+
+			let clickX = event.clientX - rect.left
+			let clickY = event.clientY - rect.top
+
+			if (Math.abs(rect.width - canvas.width) > 1) {
+				clickX = clickX * (canvas.width / rect.width)
+				clickY = clickY * (canvas.height / rect.height)
+			}
+
+			const normalizedX = clickX / scale
+			const normalizedY = clickY / scale
+
 			this.signerSelected.element = {
 				coordinates: {
 					page: page + 1,
-					llx: x - this.width / 2,
-					ury: y - this.height / 2,
+					llx: normalizedX - this.width / 2,
+					ury: normalizedY - this.height / 2,
 					width: this.width,
 					height: this.height,
 				},
@@ -268,8 +258,6 @@ export default {
 			}))
 		},
 		async goToSign() {
-			// after save, the document is no more acessible by this way,
-			// this is the reason to retain the UUID before save action
 			const uuid = this.document.settings.signerFileUuid
 			if (await this.save()) {
 				const route = this.$router.resolve({ name: 'SignPDF', params: { uuid } })
@@ -278,50 +266,43 @@ export default {
 		},
 		async save() {
 			this.loading = true
-			this.errorConfirmRequest = ''
+			const visibleElements = this.buildVisibleElements()
+
+			try {
+				const response = await this.filesStore.saveWithVisibleElements({ visibleElements })
+				showSuccess(t('libresign', response.message))
+				this.closeModal()
+				this.loading = false
+				return true
+			} catch (error) {
+				showError(error.response?.data?.ocs?.data?.message || t('libresign', 'An error occurred'))
+				this.loading = false
+				return false
+			}
+		},
+		buildVisibleElements() {
 			const visibleElements = []
-			Object.entries(this.$refs.pdfEditor.$refs.vuePdfEditor.allObjects).forEach(entry => {
-				const [pageNumber, page] = entry
-				const measurement = this.$refs.pdfEditor.$refs.vuePdfEditor.$refs['page' + pageNumber][0].getCanvasMeasurement()
-				page.forEach(function(element) {
-					visibleElements.push({
-						type: 'signature',
-						signRequestId: element.signer.signRequestId,
-						elementId: element.signer.element.elementId,
-						coordinates: {
-							page: parseInt(pageNumber) + 1,
-							width: parseInt(element.width),
-							height: parseInt(element.height),
-							llx: parseInt(element.x),
-							lly: parseInt(measurement.canvasHeight - element.y),
-							ury: parseInt(measurement.canvasHeight - element.y - element.height),
-							urx: parseInt(element.x + element.width),
-						},
-					})
+			const objects = this.$refs.pdfEditor.$refs.vuePdfEditor.getAllObjects()
+
+			objects.forEach(object => {
+				if (!object.signer) return
+
+				visibleElements.push({
+					type: 'signature',
+					signRequestId: object.signer.signRequestId,
+					elementId: object.signer.element.elementId,
+					coordinates: {
+						page: object.pageNumber,
+						width: object.normalizedCoordinates.width,
+						height: object.normalizedCoordinates.height,
+						llx: object.normalizedCoordinates.llx,
+						lly: object.normalizedCoordinates.lly,
+						ury: object.normalizedCoordinates.ury,
+						urx: object.normalizedCoordinates.urx,
+					},
 				})
-			}, this)
-			return await axios.patch(generateOcsUrl('/apps/libresign/api/v1/request-signature'), {
-				users: this.filesStore.getFile().signers,
-				// Only add to array if not empty
-				...(this.filesStore.getFile().uuid && { uuid: this.filesStore.getFile().uuid }),
-				...(this.filesStore.getFile().nodeId && { file: { fileId: this.filesStore.getFile().nodeId } }),
-				visibleElements,
-				status: 1,
 			})
-				.then(({ data }) => {
-					this.filesStore.addFile(data.ocs.data.data)
-					this.showConfirm = false
-					showSuccess(t('libresign', data.ocs.data.message))
-					this.closeModal()
-					emit('libresign:visible-elements-saved')
-					this.loading = false
-					return true
-				})
-				.catch(({ response }) => {
-					this.errorConfirmRequest = response?.data?.ocs?.data?.message || 'An error occurred'
-					this.loading = false
-					return false
-				})
+			return visibleElements
 		},
 	},
 }

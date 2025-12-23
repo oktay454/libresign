@@ -4,13 +4,23 @@
 -->
 <template>
 	<div class="identifySigner">
-		<SignerSelect :signer="signer"
+		<SignerSelect v-if="isNewSigner"
+			:signer="signer"
 			:placeholder="placeholder"
 			:method="method"
 			@update:signer="updateSigner" />
+		<NcNoteCard v-else type="info">
+			<template #icon>
+				<NcIconSvgWrapper :size="20" :svg="getMethodIcon()" />
+			</template>
+			<strong>{{ identifyMethodLabel }}:</strong> {{ signer.id }}
+		</NcNoteCard>
 
-		<label v-if="signerSelected" for="name-input">{{ t('libresign', 'Signer name') }}</label>
-		<NcTextField v-if="signerSelected"
+		<NcNoteCard v-if="disabled" type="warning" class="disabled-warning">
+			{{ t('libresign', 'This signer cannot be used because the identification method "{method}" has been disabled by the administrator.', { method: identifyMethodLabel }) }}
+		</NcNoteCard>
+
+		<NcTextField v-if="signerSelected && !disabled"
 			v-model="displayName"
 			aria-describedby="name-input"
 			autocapitalize="none"
@@ -20,7 +30,24 @@
 			:error="nameHaveError"
 			:helper-text="nameHelperText"
 			@update:value="onNameChange" />
-		<div class="identifySigner__footer">
+
+		<div v-if="signerSelected && showCustomMessage && !disabled" class="description-wrapper">
+			<NcCheckboxRadioSwitch v-model:checked="enableCustomMessage"
+				type="switch"
+				@update:checked="onToggleCustomMessage">
+				{{ t('libresign', 'Add custom message') }}
+			</NcCheckboxRadioSwitch>
+			<NcTextArea v-if="enableCustomMessage"
+				v-model="description"
+				aria-describedby="description-input"
+				maxlength="500"
+				:label="t('libresign', 'Custom message')"
+				:placeholder="t('libresign', 'Add a personal message for this signer')"
+				:rows="3"
+				resize="none" />
+		</div>
+
+		<div v-if="!disabled" class="identifySigner__footer">
 			<div class="button-group">
 				<NcButton @click="filesStore.disableIdentifySigner()">
 					{{ t('libresign', 'Cancel') }}
@@ -35,17 +62,43 @@
 	</div>
 </template>
 <script>
+import svgAccount from '@mdi/svg/svg/account.svg?raw'
+import svgEmail from '@mdi/svg/svg/email.svg?raw'
+import svgSms from '@mdi/svg/svg/message-processing.svg?raw'
+import svgWhatsapp from '@mdi/svg/svg/whatsapp.svg?raw'
+import svgXmpp from '@mdi/svg/svg/xmpp.svg?raw'
+
 import NcButton from '@nextcloud/vue/components/NcButton'
+import NcCheckboxRadioSwitch from '@nextcloud/vue/components/NcCheckboxRadioSwitch'
+import NcIconSvgWrapper from '@nextcloud/vue/components/NcIconSvgWrapper'
+import NcNoteCard from '@nextcloud/vue/components/NcNoteCard'
+import NcTextArea from '@nextcloud/vue/components/NcTextArea'
 import NcTextField from '@nextcloud/vue/components/NcTextField'
 
 import SignerSelect from './SignerSelect.vue'
 
+import svgSignal from '../../../img/logo-signal-app.svg?raw'
+import svgTelegram from '../../../img/logo-telegram-app.svg?raw'
 import { useFilesStore } from '../../store/files.js'
+
+const iconMap = {
+	svgAccount,
+	svgEmail,
+	svgSignal,
+	svgSms,
+	svgTelegram,
+	svgWhatsapp,
+	svgXmpp,
+}
 
 export default {
 	name: 'IdentifySigner',
 	components: {
 		NcButton,
+		NcCheckboxRadioSwitch,
+		NcIconSvgWrapper,
+		NcNoteCard,
+		NcTextArea,
 		NcTextField,
 		SignerSelect,
 	},
@@ -66,6 +119,14 @@ export default {
 			type: String,
 			default: t('libresign', 'Name'),
 		},
+		methods: {
+			type: Array,
+			default: () => [],
+		},
+		disabled: {
+			type: Boolean,
+			default: false,
+		},
 	},
 	setup() {
 		const filesStore = useFilesStore()
@@ -77,6 +138,8 @@ export default {
 			nameHelperText: '',
 			nameHaveError: false,
 			displayName: '',
+			description: '',
+			enableCustomMessage: false,
 			identify: '',
 			signer: {},
 		}
@@ -86,7 +149,7 @@ export default {
 			return !!this.signer?.id
 		},
 		isNewSigner() {
-			return this.id === null || this.id === undefined
+			return !this.signerToEdit || Object.keys(this.signerToEdit).length === 0
 		},
 		saveButtonText() {
 			if (this.isNewSigner) {
@@ -94,9 +157,27 @@ export default {
 			}
 			return t('libresign', 'Update')
 		},
+		identifyMethodLabel() {
+			if (!this.signer?.method) {
+				return ''
+			}
+			const methodConfig = this.methods.find(m => m.name === this.signer.method)
+			if (!methodConfig?.friendly_name) {
+				return ''
+			}
+			return methodConfig.friendly_name
+		},
+		showCustomMessage() {
+			if (this.signer?.method === 'account') {
+				return this.signer?.acceptsEmailNotifications === true
+			}
+			return !!this.signer?.method
+		},
 	},
 	beforeMount() {
 		this.displayName = this.signerToEdit.displayName ?? ''
+		this.description = this.signerToEdit.description ?? ''
+		this.enableCustomMessage = !!(this.signerToEdit.description)
 		this.identify = this.signerToEdit.identify ?? this.signerToEdit.signRequestId ?? ''
 		if (Object.keys(this.signerToEdit).length > 0 && this.signerToEdit.identifyMethods?.length) {
 			const method = this.signerToEdit.identifyMethods[0]
@@ -108,17 +189,30 @@ export default {
 		}
 	},
 	methods: {
-		updateSigner(signer) {
-			this.signer = signer
-			this.displayName = signer.displayName ?? ''
-			this.identify = signer.id ?? ''
+		getMethodIcon() {
+			const method = this.signer?.method
+			if (!method) {
+				return iconMap.svgAccount
+			}
+			return iconMap[`svg${method.charAt(0).toUpperCase() + method.slice(1)}`] || iconMap.svgAccount
 		},
-		saveSigner() {
+		updateSigner(signer) {
+			this.signer = signer ?? {}
+			this.displayName = signer?.displayName ?? ''
+			this.identify = signer?.id ?? ''
+
+			if (signer?.method === 'account' && signer?.acceptsEmailNotifications === false) {
+				this.enableCustomMessage = false
+				this.description = ''
+			}
+		},
+		async saveSigner() {
 			if (!this.signer?.method || !this.signer?.id) {
 				return
 			}
 			this.filesStore.signerUpdate({
 				displayName: this.displayName,
+				description: this.description.trim() || undefined,
 				identify: this.identify,
 				identifyMethods: [
 					{
@@ -127,7 +221,15 @@ export default {
 					},
 				],
 			})
+
+			try {
+				await this.filesStore.saveWithVisibleElements({ visibleElements: [] })
+			} catch (error) {
+				console.error('Error saving signer:', error)
+			}
+
 			this.displayName = ''
+			this.description = ''
 			this.identify = ''
 			this.signer = {}
 			this.filesStore.disableIdentifySigner()
@@ -142,6 +244,11 @@ export default {
 			this.nameHelperText = t('libresign', 'Please enter signer name.')
 			this.nameHaveError = true
 		},
+		onToggleCustomMessage(checked) {
+			if (!checked) {
+				this.description = ''
+			}
+		},
 	},
 }
 </script>
@@ -154,8 +261,32 @@ export default {
 	width: 96%;
 	margin: 0 auto;
 
+	.disabled-warning {
+		margin-top: 12px;
+		width: 100%;
+	}
+
 	#account-or-email {
 		width: 100%;
+	}
+
+	:deep(.notecard) {
+		width: 100%;
+		margin-bottom: 16px;
+
+		div {
+			display: flex;
+			align-items: center;
+			gap: 0.5em;
+		}
+	}
+	.description-wrapper {
+		width: 100%;
+		margin-bottom: 16px;
+
+		:deep(textarea) {
+			margin-top: 8px;
+		}
 	}
 
 	&__footer {
@@ -167,6 +298,7 @@ export default {
 		justify-content: space-between;
 		align-items: flex-start;
 		background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--color-main-background));
+		padding-top: 24px;
 
 		.button-group {
 			display: flex;
